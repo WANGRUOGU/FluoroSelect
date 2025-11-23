@@ -174,6 +174,33 @@ def _pair_only_fluor(a, b):
     fa = a.split(" – ", 1)[1] if " – " in a else a
     fb = b.split(" – ", 1)[1] if " – " in b else b
     return f"{fa} vs {fb}"
+def _peak_wavelength_for_label(label: str) -> float:
+    """
+    Return the emission peak wavelength (in nm) for a given label.
+    Label may be 'Probe – Fluor' or just 'Fluor'.
+    If not found or invalid, return +inf so it is sorted to the end.
+    """
+    name = label.split(" – ", 1)[1] if " – " in label else label
+    rec = dye_db.get(name)
+    if rec is None:
+        return float("inf")
+    em = np.asarray(rec.get("emission", []), dtype=float)
+    if em.size != len(wl) or np.max(em) <= 0:
+        return float("inf")
+    jmax = int(np.argmax(em))
+    return float(wl[jmax])
+
+
+def _sorted_order_by_peak(labels_list):
+    """
+    Given a list of labels, return:
+      - order: np.array of indices that sorts them by emission peak wavelength
+      - sorted_labels: labels_list reordered by that order
+    """
+    peaks = [ _peak_wavelength_for_label(lbl) for lbl in labels_list ]
+    order = np.argsort(peaks)
+    sorted_labels = [labels_list[i] for i in order]
+    return order, sorted_labels
 
 
 def _html_two_row_table(row0_label, row1_label, row0_vals, row1_vals,
@@ -605,7 +632,7 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
     required_count = (N_pick if use_pool else None)
 
     # ---------- EMISSION-ONLY MODE ----------
-    if mode == "Emission spectra":
+        if mode == "Emission spectra":
         E_norm, labels, idx_groups = build_emission_only_matrix(wl, dye_db, groups)
         if E_norm.shape[1] == 0:
             st.error("No spectra.")
@@ -615,7 +642,15 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
             E_norm, idx_groups, labels,
             levels=10, enforce_unique=True, required_count=required_count
         )
+
+        # --- sort selected fluorophores by emission peak wavelength ---
+        # labels_sel_tmp 用于计算排序
+        labels_sel_tmp = [labels[j] for j in sel_idx]
+        order, _ = _sorted_order_by_peak(labels_sel_tmp)
+        sel_idx = [sel_idx[i] for i in order]
+
         colors = _ensure_colors(len(sel_idx))
+
 
         # Selected fluorophores table
         if use_pool:
@@ -769,6 +804,7 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
             powers, B = derive_powers_separate(wl, dye_db, final_labels, laser_list)
 
         # Build only selected subset on 1 nm grid
+                # Build only selected subset
         if use_pool:
             small_groups = {"Pool": [s.split(" – ", 1)[1] for s in final_labels]}
         else:
@@ -781,7 +817,14 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
             wl, dye_db, small_groups, laser_list, laser_strategy, powers
         )
 
+        # --- sort by emission peak wavelength ---
+        if labels_sel:
+            order, labels_sel = _sorted_order_by_peak(labels_sel)
+            E_raw_sel = E_raw_sel[:, order]
+            E_norm_sel = E_norm_sel[:, order]
+
         colors = _ensure_colors(len(labels_sel))
+
 
         # Selected fluorophores table
         st.subheader("Selected Fluorophores (with lasers)")
