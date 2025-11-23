@@ -34,7 +34,7 @@ from ui_helpers import (
 from metrics import compute_prop_and_accuracy
 
 st.set_page_config(page_title="Fluorophore Selection", layout="wide")
-
+st.title("Fluorophore Selection for Multiplexed Imaging")
 # -------------------- Data --------------------
 wl, dye_db = load_dyes_yaml(DYES_YAML)
 probe_map = load_probe_fluor_map(PROBE_MAP_YAML)
@@ -180,6 +180,7 @@ def apply_mbs_zeroing(E_raw_on_det, laser_strategy, spec_res_mode, laser_list):
 # -------------------- Sidebar --------------------
 st.sidebar.header("Configuration")
 
+# 1. 选择模式
 mode = st.sidebar.radio(
     "Mode",
     options=("Emission spectra", "Predicted spectra"),
@@ -190,23 +191,19 @@ mode = st.sidebar.radio(
     key="mode_radio",
 )
 
-source_mode = st.sidebar.radio(
-    "Selection source",
-    ("By probes", "From readout pool", "All fluorophores", "EUB338 only"),
-    key="source_radio",
-)
-
-k_show = st.sidebar.slider("Show top-K similarities", 5, 50, 10, 1, key="k_show_slider")
-
 laser_list = []
 laser_strategy = None
 spec_res_mode = "1 nm (general)"
 
+# 2. 在 Predicted 模式下，先选 laser 使用方式 + 光谱分辨率
 if mode == "Predicted spectra":
     laser_strategy = st.sidebar.radio(
-        "Laser usage", ("Simultaneous", "Separate"), key="laser_strategy_radio"
+        "Laser usage",
+        ("Simultaneous", "Separate"),
+        key="laser_strategy_radio",
     )
-    # Spectral resolution choice (only meaningful for Simultaneous)
+
+    # ✅ Spectral resolution 提到 Selection source 之前
     if laser_strategy == "Simultaneous":
         spec_res_mode = st.sidebar.radio(
             "Spectral resolution",
@@ -216,6 +213,18 @@ if mode == "Predicted spectra":
     else:
         spec_res_mode = "1 nm (general)"
 
+# 3. 再选 Selection source
+source_mode = st.sidebar.radio(
+    "Selection source",
+    ("By probes", "From readout pool", "All fluorophores", "EUB338 only"),
+    key="source_radio",
+)
+
+# 4. 其他 sidebar 控件
+k_show = st.sidebar.slider("Show top-K similarities", 5, 50, 10, 1, key="k_show_slider")
+
+# 5. 在 Predicted 模式下继续设置 laser 波长
+if mode == "Predicted spectra":
     n = st.sidebar.number_input("Number of lasers", 1, 8, 4, 1, key="num_lasers_input")
     cols_l = st.sidebar.columns(2)
     defaults = [405, 488, 561, 639]
@@ -229,6 +238,7 @@ if mode == "Predicted spectra":
             key=f"laser_{i+1}",
         )
         laser_list.append(int(lam))
+
 
 # -------------------- Source selection -> groups --------------------
 use_pool = False
@@ -672,5 +682,5 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
 
 
 # -------------------- Execute --------------------
-st.title("Fluorophore Selection for Multiplexed Imaging")
+
 run(groups, mode, laser_strategy, laser_list, spec_res_mode)
