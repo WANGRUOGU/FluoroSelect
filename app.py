@@ -632,7 +632,7 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
     required_count = (N_pick if use_pool else None)
 
     # ---------- EMISSION-ONLY MODE ----------
-        if mode == "Emission spectra":
+    if mode == "Emission spectra":
         E_norm, labels, idx_groups = build_emission_only_matrix(wl, dye_db, groups)
         if E_norm.shape[1] == 0:
             st.error("No spectra.")
