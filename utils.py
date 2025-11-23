@@ -9,6 +9,7 @@ def _make_cbc_exact():
     except TypeError:
         return pulp.PULP_CBC_CMD(msg=False)
 
+
 _SOLVER = _make_cbc_exact()
 
 
@@ -39,7 +40,8 @@ def load_dyes_yaml(path):
             emission=em, excitation=ex, quantum_yield=qy, extinction_coeff=ec
         )
 
-    qys = [v["quantum_yield"] for v in dye_db.values() if v.get("quantum_yield") is not None]
+    qys = [v["quantum_yield"] for v in dye_db.values()
+           if v.get("quantum_yield") is not None]
     mean_qy = float(np.mean(qys)) if len(qys) else 1.0
     for v in dye_db.values():
         if v.get("quantum_yield") is None:
@@ -82,9 +84,10 @@ def load_probe_fluor_map(path):
 # =================== Linear-algebra helpers ===================
 
 def _safe_l2norm_cols(E):
-    """L2-normalize each column with numerical guard."""
+    """L2-normalize each column with a numerical guard."""
     denom = np.linalg.norm(E, axis=0, keepdims=True) + 1e-12
     return E / denom
+
 
 def cosine_similarity_matrix(E):
     """
@@ -95,6 +98,7 @@ def cosine_similarity_matrix(E):
     G = (E.T @ E) / np.outer(norms, norms)
     np.fill_diagonal(G, 0.0)
     return G
+
 
 def top_k_pairwise(S, labels_pair, k=10):
     """
@@ -109,7 +113,8 @@ def top_k_pairwise(S, labels_pair, k=10):
     order = np.argsort(-vals)[: min(k, vals.size)]
     out = []
     for idx in order:
-        i = iu[0][idx]; j = iu[1][idx]
+        i = iu[0][idx]
+        j = iu[1][idx]
         out.append((float(vals[idx]), labels_pair[i], labels_pair[j]))
     return out
 
@@ -155,69 +160,70 @@ def build_emission_only_matrix(wl, dye_db, groups):
 def _nearest_idx_from_grid(wl, lam):
     """Assuming 1 nm grid starting at wl[0]; pick nearest index."""
     idx = int(round(lam - wl[0]))
-    if idx < 0: idx = 0
-    if idx >= len(wl): idx = len(wl) - 1
+    if idx < 0:
+        idx = 0
+    if idx >= len(wl):
+        idx = len(wl) - 1
     return idx
+
 
 def _segments_from_lasers(wl, lasers_sorted):
     """Segments [lo, hi) defined by sorted laser wavelengths."""
     segs = []
     for i, l in enumerate(lasers_sorted):
         lo = l
-        hi = lasers_sorted[i+1] if i+1 < len(lasers_sorted) else wl[-1] + 1
+        hi = lasers_sorted[i + 1] if i + 1 < len(lasers_sorted) else wl[-1] + 1
         segs.append((lo, hi))
     return segs
 
+
 def _interp_at(w, y, x):
     """1D linear interpolation on a discrete grid (clamped)."""
-    if x <= w[0]: return float(y[0])
-    if x >= w[-1]: return float(y[-1])
+    if x <= w[0]:
+        return float(y[0])
+    if x >= w[-1]:
+        return float(y[-1])
     i = int(np.searchsorted(w, x)) - 1
-    t = (x - w[i]) / (w[i+1] - w[i])
-    return float(y[i]*(1-t) + y[i+1]*t)
+    t = (x - w[i]) / (w[i + 1] - w[i])
+    return float(y[i] * (1 - t) + y[i + 1] * t)
 
 
 def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
     """
-    Calibrate laser powers in Simultaneous mode.
+    Calibrate laser powers in Simultaneous mode, following this logic:
 
-    Idea (segment-based, using only the selected dyes):
+    1. Sort laser wavelengths: lam[0] < lam[1] < ... and define segments
+       [lam[i], lam[i+1]) and the final [lam[-1], wl[-1]+1).
 
-    1. Sort laser wavelengths: lam[0] < lam[1] < ...
-       Define segments [lam[i], lam[i+1]) and the last one [lam[-1], wl[-1] + 1).
-
-    2. Use only dyes in `selection_labels` for calibration:
+    2. Use only selection_labels for calibration:
        - For each dye, find the segment containing its global emission peak.
-       - A segment is called 'active' if at least one selected dye has its peak inside it.
+       - A segment is "peak-active" if at least one dye's global peak lies inside it.
 
-    3. For segments that are not active, the power of the left boundary laser is set to 0.
+    3. For segments that are not peak-active, set the power of the left-boundary laser to 0.
 
-    4. For the leftmost active segment s0:
-       - Set P[s0] = 1 for the laser at lam[s0].
-       - For each dye j, compute
-            seg_peak_j = max emission in segment s0
+    4. For the left-most peak-active segment s0:
+       - Set P[s0] = 1 for its left-boundary laser.
+       - For each dye j:
+            seg_peak_j = max emission inside segment s0
             k_j        = excitation(lam[s0]) * QY * EC
             value_j    = seg_peak_j * k_j
-         Define the global brightness cap B = max_j(value_j).
+         Define B = max_j value_j (global brightness cap).
 
-    5. For each later active segment s:
+    5. For each subsequent peak-active segment s:
        - For each dye j:
-            seg_peak_j = max emission in segment s
-            pre_j      = sum_{m < s} excitation(lam[m]) * QY * EC * P[m]
-            k_js       = excitation(lam[s]) * QY * EC
-            The constraint is:
-                seg_peak_j * (pre_j + k_js * P[s]) <= B
-            Solving seg_peak_j * (pre_j + k_js * c) = B gives:
+            pre_j  = sum over all already-set lasers m < s
+                     of excitation(lam[m]) * QY * EC * P[m]
+            k_js   = excitation(lam[s]) * QY * EC
+            seg_peak_j = max emission inside segment s
+            We need: seg_peak_j * (pre_j + k_js * P[s]) <= B
+            Solve seg_peak_j * (pre_j + k_js * c) = B for c:
                 c_j = (B / seg_peak_j - pre_j) / k_js
             Keep only c_j > 0 as valid upper bounds.
-         Set P[s] = min_j(c_j) over all valid c_j (or 0 if no valid bound).
+         Set P[s] = min_j c_j over all valid positive c_j, or 0 if none.
 
-    Returns
-    -------
-    powers_sorted_by_wavelength : list[float]
-        Laser powers aligned with sorted `laser_wavelengths`.
-    B : float
-        Global brightness cap as defined in step 4.
+    Returns:
+        powers_sorted_by_wavelength: list of len(lam) aligned with sorted lam
+        B: brightness cap determined by the first peak-active segment.
     """
     lam = np.array(sorted(set(float(l) for l in laser_wavelengths)), dtype=float)
     W = len(wl)
@@ -225,7 +231,7 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
     if lam.size == 0:
         return [0.0] * 0, 0.0
 
-    # Collect dye records for the selected labels
+    # Use only selected dyes for calibration
     fluor_names = [s.split(" – ", 1)[1] for s in selection_labels]
     recs = []
     for f in fluor_names:
@@ -239,14 +245,12 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
         recs.append(rec)
 
     if not recs:
-        # No usable dyes: all powers are zero
         return [0.0] * len(lam), 0.0
 
-    # Segment helper (aligned with build_effective_with_lasers)
     segs = _segments_from_lasers(wl, lam)
 
     def seg_peak(rec, seg_index):
-        """Maximum emission of rec inside segment seg_index."""
+        """Max emission of rec inside segment seg_index."""
         lo, hi = segs[seg_index]
         loi = _nearest_idx_from_grid(wl, lo)
         hii = _nearest_idx_from_grid(wl, hi - 1) + 1
@@ -256,7 +260,7 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
         return float(np.max(em[loi:hii]))
 
     def coef_at(rec, l):
-        """excitation(l) * QY * EC (using interpolation on excitation)."""
+        """excitation(l) * QY * EC using interpolation."""
         ex = rec["excitation"]
         qy = rec.get("quantum_yield", None)
         ec = rec.get("extinction_coeff", None)
@@ -265,7 +269,7 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
         ex_l = _interp_at(wl, ex, l)
         return float(ex_l * qy * (ec if ec is not None else 1.0))
 
-    # Mark active segments: those that contain at least one global emission peak
+    # Mark segments that contain at least one global emission peak
     seg_has_peak = [False] * len(segs)
     for rec in recs:
         em = rec["emission"]
@@ -279,19 +283,16 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
                 break
 
     peak_segs = [s for s, u in enumerate(seg_has_peak) if u]
-
-    # Initialize powers with zeros
     P = np.zeros(len(lam), dtype=float)
 
     if not peak_segs:
-        # No active segments: everything stays zero
         return P.tolist(), 0.0
 
-    # Leftmost active segment s0
+    # First peak-active segment
     s0 = peak_segs[0]
     P[s0] = 1.0
 
-    # Define B from segment s0
+    # Define brightness cap B based on segment s0
     B = 0.0
     for rec in recs:
         m0 = seg_peak(rec, s0)
@@ -303,19 +304,17 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
             B = val
 
     if B <= 0.0:
-        # Degenerate case: everything is effectively zero
         return P.tolist(), 0.0
 
-    # March over later active segments and set their powers
+    # Subsequent peak-active segments
     for s in peak_segs[1:]:
         cand_c = []
-
         for rec in recs:
             m_seg = seg_peak(rec, s)
             if m_seg <= 0.0:
                 continue
 
-            # pre_j: contribution from all previously calibrated lasers
+            # Contribution from previous lasers
             pre_j = 0.0
             for m_idx in range(s):
                 if P[m_idx] == 0.0:
@@ -323,13 +322,10 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
                 k_prev = coef_at(rec, lam[m_idx])
                 pre_j += k_prev * P[m_idx]
 
-            # Contribution of the current laser
             k_js = coef_at(rec, lam[s])
             if k_js <= 0.0:
-                # This dye does not respond to the current laser
                 continue
 
-            # Solve m_seg * (pre_j + k_js * c) = B
             c_j = (B / m_seg - pre_j) / k_js
             if c_j > 0.0:
                 cand_c.append(c_j)
@@ -337,18 +333,22 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
         if cand_c:
             P[s] = float(max(0.0, min(cand_c)))
         else:
-            # No positive upper bound from any dye -> keep at 0
             P[s] = 0.0
 
     return P.tolist(), float(B)
 
+
 def derive_powers_separate(wl, dye_db, selection_labels, laser_wavelengths):
     """
-    Separate mode calibration (per your spec):
-    - Optimize on emission-only to get a set A.
-    - Set the smallest-wavelength laser to power=1 and define B by that laser's reachable peak.
-    - For each other laser, scale so its reachable peak equals B.
-    Returns (powers_sorted, B).
+    Separate-mode calibration:
+    - Use selected dyes.
+    - Let the smallest-wavelength laser have power = 1; define B as the maximum
+      reachable peak (emission * excitation * QY * EC) across dyes for that laser.
+    - For each other laser, scale so that its reachable peak equals B.
+
+    Returns:
+        powers_sorted: list of powers aligned with sorted laser_wavelengths
+        B: brightness cap.
     """
     lam = np.array(sorted(laser_wavelengths), dtype=float)
     W = len(wl)
@@ -356,13 +356,14 @@ def derive_powers_separate(wl, dye_db, selection_labels, laser_wavelengths):
     recs = [dye_db[f] for f in fls if f in dye_db]
 
     def coef(rec, l):
-        ex = rec["excitation"]; qy = rec["quantum_yield"]; ec = rec["extinction_coeff"]
+        ex = rec["excitation"]
+        qy = rec["quantum_yield"]
+        ec = rec["extinction_coeff"]
         if ex is None or len(ex) != W or qy is None:
             return 0.0
         ex_l = _interp_at(wl, ex, l)
         return float(ex_l * qy * (ec if ec is not None else 1.0))
 
-    # reachable peak per laser across selected dyes
     M = []
     for l in lam:
         peaks = []
@@ -376,7 +377,7 @@ def derive_powers_separate(wl, dye_db, selection_labels, laser_wavelengths):
 
     P = np.zeros_like(M)
     if M.size == 0:
-        return [1.0]*0, 1.0
+        return [1.0] * 0, 1.0
     P[0] = 1.0
     B = float(M[0])
 
@@ -388,35 +389,19 @@ def derive_powers_separate(wl, dye_db, selection_labels, laser_wavelengths):
 
 def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, powers):
     """
-    Build effective spectra for ALL candidates, given laser wavelengths and powers.
+    Build effective spectra for ALL candidates.
 
-    Parameters
-    ----------
-    wl : array-like, shape (W,)
-        Wavelength grid (nm).
-    dye_db : dict
-        Mapping: fluorophore name -> {emission, excitation, quantum_yield, extinction_coeff}.
-    groups : dict[str, list[str]]
-        Mapping: probe/group name -> list of candidate fluorophore names.
-    laser_wavelengths : list[float]
-        Laser wavelengths (nm).
-    mode : {"Simultaneous", "Separate"}
-        - "Simultaneous": additive inside each segment; within a segment, the
-          effective coefficient is the cumulative sum over all lasers up to that segment.
-        - "Separate": build a block per laser and concatenate blocks vertically.
-    powers : list[float]
-        Laser powers aligned with sorted(laser_wavelengths).
+    - Simultaneous: additive inside each laser's segment; within each segment,
+      the effective coefficient is the cumulative sum of excitation*QY*EC*P[m]
+      for all lasers m up to the segment index.
+    - Separate: build a block per laser (emission scaled by excitation*QY*EC*P[i])
+      and vertically concatenate the blocks per dye.
 
-    Returns
-    -------
-    E_raw : ndarray
-        Shape (W, N) for "Simultaneous" or (W * L, N) for "Separate".
-    E_norm : ndarray
-        Same shape as E_raw, L2-normalized per column.
-    labels_pair : list[str]
-        List of labels "Probe – Fluor" in column order.
-    idx_groups : list[list[int]]
-        Column indices per group, in the same group order as `groups`.
+    Returns:
+      E_raw:  W x N  (Simultaneous)  OR  (W*L) x N (Separate)
+      E_norm: same shape, L2 normalized by column (for optimization)
+      labels_pair: list[str] "Probe – Fluor"
+      idx_groups: list[list[int]] for group constraints.
     """
     W = len(wl)
     lam = np.array(sorted(laser_wavelengths), dtype=float)
@@ -442,7 +427,7 @@ def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, pow
     col_id = 0
 
     if mode == "Separate":
-        # --------- SEPARATE mode: one block per laser, then vertical concatenation ----------
+        # Separate mode: block-structured effective spectra (per laser)
         for probe, cand_list in groups.items():
             idxs = []
             for fluor in cand_list:
@@ -458,7 +443,8 @@ def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, pow
 
                 per_laser_blocks = []
                 for i, l in enumerate(lam):
-                    k = _interp_at(wl, ex, l) * qy * (ec if ec is not None else 1.0) * pw[i]
+                    k = _interp_at(wl, ex, l) * qy * (ec if ec is not None else 1.0)
+                    k *= pw[i]
                     per_laser_blocks.append(em * k)
                 eff_concat = np.concatenate(per_laser_blocks, axis=0)
                 cols.append(eff_concat)
@@ -478,7 +464,7 @@ def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, pow
         return E_raw, E_norm, labels, idx_groups
 
     else:
-        # --------- SIMULTANEOUS mode: segment-wise additive, cumulative coefficient ----------
+        # Simultaneous mode: per-segment cumulative coefficient
         segs = _segments_from_lasers_local(wl, lam)
         for probe, cand_list in groups.items():
             idxs = []
@@ -497,15 +483,12 @@ def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, pow
                 for i, (lo, hi) in enumerate(segs):
                     loi = _nearest_idx_from_grid_local(wl, lo)
                     hii = _nearest_idx_from_grid_local(wl, hi - 1) + 1
-                    # cumulative coefficient within this segment (sum over all lasers up to index i)
+                    if loi >= hii:
+                        continue
                     total_k = 0.0
                     for m in range(i + 1):
-                        total_k += (
-                            _interp_at(wl, ex, lam[m]) *
-                            qy *
-                            (ec if ec is not None else 1.0) *
-                            pw[m]
-                        )
+                        ex_l = _interp_at(wl, ex, lam[m])
+                        total_k += ex_l * qy * (ec if ec is not None else 1.0) * pw[m]
                     eff[loi:hii] += em[loi:hii] * total_k
 
                 cols.append(eff)
@@ -568,11 +551,10 @@ def solve_minimax_layer(E_norm, idx_groups, labels_pair,
     C = cosine_similarity_matrix(E_norm)
     prob = pulp.LpProblem("minimax", pulp.LpMinimize)
     x = [pulp.LpVariable(f"x_{j}", lowBound=0, upBound=1, cat="Binary") for j in range(N)]
-    # y can be continuous in [0,1]; with binary x the relaxation is tight
     y = {}
     for i in range(N):
-        for j in range(i+1, N):
-            y[(i,j)] = pulp.LpVariable(f"y_{i}_{j}", lowBound=0, upBound=1)
+        for j in range(i + 1, N):
+            y[(i, j)] = pulp.LpVariable(f"y_{i}_{j}", lowBound=0, upBound=1)
     t = pulp.LpVariable("t", lowBound=0)
 
     # selection constraints
@@ -586,9 +568,11 @@ def solve_minimax_layer(E_norm, idx_groups, labels_pair,
         prob += pulp.lpSum(x) == int(required_count), "PickN"
 
     # y linking + t >= C_ij * y_ij
-    for (i,j), yij in y.items():
-        prob += yij <= x[i]; prob += yij <= x[j]; prob += yij >= x[i] + x[j] - 1
-        prob += t >= float(C[i,j]) * yij
+    for (i, j), yij in y.items():
+        prob += yij <= x[i]
+        prob += yij <= x[j]
+        prob += yij >= x[i] + x[j] - 1
+        prob += t >= float(C[i, j]) * yij
 
     prob += t
     _ = prob.solve(_SOLVER)
@@ -622,7 +606,7 @@ def solve_lexicographic_k(E_norm, idx_groups, labels_pair, levels: int = 10,
     if N == 0:
         return [], []
     C = cosine_similarity_matrix(E_norm)
-    pairs = [(i, j) for i in range(N) for j in range(i+1, N)]
+    pairs = [(i, j) for i in range(N) for j in range(i + 1, N)]
     P = len(pairs)
     if P == 0:
         if required_count is None:
@@ -641,9 +625,12 @@ def solve_lexicographic_k(E_norm, idx_groups, labels_pair, levels: int = 10,
     for k in range(1, K + 1):
         prob = pulp.LpProblem(f"lexi_k{k}", pulp.LpMinimize)
 
-        x = [pulp.LpVariable(f"x_{j}", lowBound=0, upBound=1, cat="Binary") for j in range(N)]
-        y = { (i,j): pulp.LpVariable(f"y_{i}_{j}", lowBound=0, upBound=1) for (i,j) in pairs }
-        z = { (i,j): pulp.LpVariable(f"z_{i}_{j}", lowBound=0) for (i,j) in pairs }
+        x = [pulp.LpVariable(f"x_{j}", lowBound=0, upBound=1, cat="Binary")
+             for j in range(N)]
+        y = {(i, j): pulp.LpVariable(f"y_{i}_{j}", lowBound=0, upBound=1)
+             for (i, j) in pairs}
+        z = {(i, j): pulp.LpVariable(f"z_{i}_{j}", lowBound=0)
+             for (i, j) in pairs}
 
         # selection constraints
         if required_count is None:
@@ -656,16 +643,20 @@ def solve_lexicographic_k(E_norm, idx_groups, labels_pair, levels: int = 10,
             prob += pulp.lpSum(x) == int(required_count), "PickN"
 
         # linking
-        for (i,j) in pairs:
-            yij = y[(i,j)]
-            prob += yij <= x[i]; prob += yij <= x[j]; prob += yij >= x[i] + x[j] - 1
-            cij = float(C[i,j]); zij = z[(i,j)]
-            prob += zij <= cij * yij; prob += zij >= cij * yij
+        for (i, j) in pairs:
+            yij = y[(i, j)]
+            prob += yij <= x[i]
+            prob += yij <= x[j]
+            prob += yij >= x[i] + x[j] - 1
+            cij = float(C[i, j])
+            zij = z[(i, j)]
+            prob += zij <= cij * yij
+            prob += zij >= cij * yij
 
         # level-1
         t1 = pulp.LpVariable("t1", lowBound=0)
-        for (i,j) in pairs:
-            prob += t1 >= z[(i,j)]
+        for (i, j) in pairs:
+            prob += t1 >= z[(i, j)]
         if 0 < len(best_layers):
             prob += t1 <= float(best_layers[0]) + eps
 
@@ -674,9 +665,12 @@ def solve_lexicographic_k(E_norm, idx_groups, labels_pair, levels: int = 10,
         if k >= 2:
             for r in range(2, k + 1):
                 lam[r] = pulp.LpVariable(f"lam{r}", lowBound=0)
-                mu[r] = { (i,j): pulp.LpVariable(f"mu{r}_{i}_{j}", lowBound=0) for (i,j) in pairs }
-                for (i,j) in pairs:
-                    prob += mu[r][(i,j)] >= z[(i,j)] - lam[r]
+                mu[r] = {
+                    (i, j): pulp.LpVariable(f"mu{r}_{i}_{j}", lowBound=0)
+                    for (i, j) in pairs
+                }
+                for (i, j) in pairs:
+                    prob += mu[r][(i, j)] >= z[(i, j)] - lam[r]
                 if (r - 1) < len(best_layers):
                     prob += lam[r] <= float(best_layers[r - 1]) + eps
 
@@ -688,7 +682,6 @@ def solve_lexicographic_k(E_norm, idx_groups, labels_pair, levels: int = 10,
 
         _ = prob.solve(_SOLVER)
 
-        # record layer value
         best_layers.append(float((t1 if k == 1 else lam[k]).value() or 0.0))
 
         # read current x (robust integralization)
@@ -698,7 +691,6 @@ def solve_lexicographic_k(E_norm, idx_groups, labels_pair, levels: int = 10,
             xv = np.array([(v.value() or 0.0) for v in x])
             x_star_last = list(np.argsort(-xv)[:required_count])
 
-        # early exit if value is essentially zero
         if best_layers[-1] <= 1e-8:
             break
 
