@@ -1,8 +1,10 @@
-# app.py — Fluorophore selection with emission / predicted spectra, rods simulation
+# app.py
 import json
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+
+from config import DYES_YAML, PROBE_MAP_YAML, READOUT_POOL_YAML, DETECTION_CHANNELS
 from utils import (
     load_dyes_yaml,
     load_probe_fluor_map,
@@ -14,35 +16,34 @@ from utils import (
     cosine_similarity_matrix,
     top_k_pairwise,
 )
+from sim_core import (
+    simulate_rods_and_unmix,
+    colorize_composite,
+    argmax_labelmap,
+    to_uint8_gray,
+)
+from ui_helpers import (
+    ensure_colors,
+    rgb01_to_plotly,
+    pair_only_fluor,
+    html_two_row_table,
+    show_bw_grid,
+    metric_header,
+    prettify_name,
+)
+from metrics import compute_prop_and_accuracy
 
 st.set_page_config(page_title="Fluorophore Selection", layout="wide")
 
 # -------------------- Data --------------------
-DYES_YAML = "data/dyes.yaml"
-PROBE_MAP_YAML = "data/probe_fluor_map.yaml"
-READOUT_POOL_YAML = "data/readout_fluorophores.yaml"
-
 wl, dye_db = load_dyes_yaml(DYES_YAML)
 probe_map = load_probe_fluor_map(PROBE_MAP_YAML)
-
-# Detection channels for Valm lab / simulations
-DETECTION_CHANNELS = np.array([
-    414, 423, 432, 441, 450, 459, 468, 477, 486,
-    494, 503, 512, 521, 530, 539, 548, 557, 566,
-    575, 583, 592, 601, 610, 619, 628, 637, 646,
-    655, 664, 673, 681, 690, 717
-], dtype=float)
-
-# Detection channels that are blocked by MBS in 405/488/561/639 Simultaneous mode
-MBS_ZERO_CHANNELS = np.array(
-    [414, 486, 557, 566, 628, 637, 646],
-    dtype=float
-)
 
 
 def _load_readout_pool(path):
     try:
         import yaml, os
+
         if not os.path.exists(path):
             return []
         with open(path, "r", encoding="utf-8") as f:
@@ -58,7 +59,7 @@ readout_pool = _load_readout_pool(READOUT_POOL_YAML)
 
 
 def _get_inventory_from_probe_map():
-    """Union of all fluorophores that appear in probe_fluor_map.yaml and exist in dyes.yaml."""
+    """Union of all fluorophores that appear anywhere in probe_fluor_map.yaml and exist in dyes.yaml."""
     inv = set()
     for _, vals in probe_map.items():
         if not isinstance(vals, (list, tuple)):
@@ -78,7 +79,8 @@ def _get_eub338_pool():
     """Candidates under the EUB 338 probe key (various spellings), filtered to dyes.yaml presence."""
     targets = {"eub338", "eub 338", "eub-338"}
 
-    def norm(s): return "".join(s.lower().split())
+    def norm(s):
+        return "".join(s.lower().split())
 
     for k in probe_map.keys():
         if norm(k) in targets:
@@ -87,7 +89,8 @@ def _get_eub338_pool():
     # relaxed fallback
     import re
 
-    def norm2(s): return re.sub(r"[^a-z0-9]+", "", s.lower())
+    def norm2(s):
+        return re.sub(r"[^a-z0-9]+", "", s.lower())
 
     for k in probe_map.keys():
         if norm2(k) == "eub338":
@@ -96,85 +99,7 @@ def _get_eub338_pool():
     return []
 
 
-# -------------------- Sidebar --------------------
-st.sidebar.header("Configuration")
-mode = st.sidebar.radio(
-    "Mode",
-    options=("Emission spectra", "Predicted spectra"),
-    help=("Emission: emission-only, peak-normalized.\n"
-          "Predicted: effective spectra with lasers (excitation · QY · EC)."),
-    key="mode_radio"
-)
-
-source_mode = st.sidebar.radio(
-    "Selection source",
-    ("By probes", "From readout pool", "All fluorophores", "EUB338 only"),
-    key="source_radio"
-)
-
-k_show = st.sidebar.slider("Show top-K similarities", 5, 50, 10, 1, key="k_show_slider")
-
-laser_list = []
-laser_strategy = None
-pred_res_mode = None  # new: resolution mode for Predicted spectra
-
-if mode == "Predicted spectra":
-    pred_res_mode = st.sidebar.radio(
-        "Spectral resolution (Predicted mode)",
-        (
-            "1 nm (general use)",
-            f"{len(DETECTION_CHANNELS)} detection channels (Valm lab)"
-        ),
-        key="predicted_resolution_radio"
-    )
-
-    laser_strategy = st.sidebar.radio(
-        "Laser usage",
-        ("Simultaneous", "Separate"),
-        key="laser_strategy_radio"
-    )
-
-    n = st.sidebar.number_input("Number of lasers", 1, 8, 4, 1, key="num_lasers_input")
-    cols_sb = st.sidebar.columns(2)
-    defaults = [405, 488, 561, 639]
-    for i in range(n):
-        lam = cols_sb[i % 2].number_input(
-            f"Laser {i+1} (nm)", int(wl.min()), int(max(700, wl.max())),
-            defaults[i] if i < len(defaults) else int(wl.min()), 1, key=f"laser_{i+1}"
-        )
-        laser_list.append(int(lam))
-
-# -------------------- Helpers --------------------
-DEFAULT_COLORS = np.array([
-    [0.95, 0.25, 0.25], [0.25, 0.65, 0.95],
-    [0.25, 0.85, 0.35], [0.90, 0.70, 0.20],
-    [0.80, 0.40, 0.80], [0.25, 0.80, 0.80],
-    [0.85, 0.50, 0.35], [0.60, 0.60, 0.60],
-], dtype=float)
-
-
-def _ensure_colors(R):
-    if R <= len(DEFAULT_COLORS):
-        return DEFAULT_COLORS[:R]
-    hs = np.linspace(0, 1, R, endpoint=False)
-    extra = np.stack([
-        np.abs(np.sin(2 * np.pi * hs)) * 0.7 + 0.3,
-        np.abs(np.sin(2 * np.pi * (hs + 0.33))) * 0.7 + 0.3,
-        np.abs(np.sin(2 * np.pi * (hs + 0.66))) * 0.7 + 0.3
-    ], axis=1)
-    return extra[:R]
-
-
-def _rgb01_to_plotly(col):
-    r, g, b = (int(255 * x) for x in col)
-    return f"rgb({r},{g},{b})"
-
-
-def _pair_only_fluor(a, b):
-    fa = a.split(" – ", 1)[1] if " – " in a else a
-    fb = b.split(" – ", 1)[1] if " – " in b else b
-    return f"{fa} vs {fb}"
-def _peak_wavelength_for_label(label: str) -> float:
+def peak_wavelength_for_label(label: str) -> float:
     """
     Return the emission peak wavelength (in nm) for a given label.
     Label may be 'Probe – Fluor' or just 'Fluor'.
@@ -191,66 +116,16 @@ def _peak_wavelength_for_label(label: str) -> float:
     return float(wl[jmax])
 
 
-def _sorted_order_by_peak(labels_list):
+def sorted_order_by_peak(labels_list):
     """
     Given a list of labels, return:
       - order: np.array of indices that sorts them by emission peak wavelength
       - sorted_labels: labels_list reordered by that order
     """
-    peaks = [ _peak_wavelength_for_label(lbl) for lbl in labels_list ]
+    peaks = [peak_wavelength_for_label(lbl) for lbl in labels_list]
     order = np.argsort(peaks)
     sorted_labels = [labels_list[i] for i in order]
     return order, sorted_labels
-
-
-def _html_two_row_table(row0_label, row1_label, row0_vals, row1_vals,
-                        color_second_row=False, color_thresh=0.9, fmt2=False):
-    def esc(x): return (str(x).replace("&", "&amp;")
-                        .replace("<", "&lt;")
-                        .replace(">", "&gt;"))
-
-    def fmtv(v):
-        if fmt2:
-            try:
-                return f"{float(v):.3f}"
-            except Exception:
-                return esc(v)
-        return esc(v)
-
-    cells0 = "".join(
-        f"<td style='padding:6px 10px;border:1px solid #ddd;'>{esc(v)}</td>"
-        for v in row0_vals
-    )
-    tds0 = (
-        f"<td style='padding:6px 10px;border:1px solid #ddd;white-space:nowrap;'>{esc(row0_label)}</td>"
-        f"{cells0}"
-    )
-
-    tds1_list = []
-    for v in row1_vals:
-        style = "padding:6px 10px;border:1px solid #ddd;"
-        if color_second_row:
-            try:
-                vv = float(v)
-                style += f"color:{'red' if vv > color_thresh else 'green'};"
-            except Exception:
-                pass
-        tds1_list.append(f"<td style='{style}'>{fmtv(v)}</td>")
-    tds1 = (
-        f"<td style='padding:6px 10px;border:1px solid #ddd;white-space:nowrap;'>{esc(row1_label)}</td>"
-        f"{''.join(tds1_list)}"
-    )
-
-    st.markdown(
-        f"""
-    <div style="overflow-x:auto;">
-      <table style="border-collapse:collapse;width:100%;table-layout:auto;">
-        <tbody><tr>{tds0}</tr><tr>{tds1}</tr></tbody>
-      </table>
-    </div>
-    """,
-        unsafe_allow_html=True,
-    )
 
 
 @st.cache_data(show_spinner=False)
@@ -278,289 +153,45 @@ def cached_interpolate_E_on_channels(wl, spectra_cols, chan_centers_nm):
     return np.nan_to_num(E, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-def _to_uint8_gray(img2d):
-    z = np.asarray(img2d, dtype=float)
-    m = float(z.max())
-    if m > 0:
-        z = z / m
-    return (np.clip(z, 0, 1) * 255).astype(np.uint8)
+# -------------------- Sidebar --------------------
+st.sidebar.header("Configuration")
+mode = st.sidebar.radio(
+    "Mode",
+    options=("Emission spectra", "Predicted spectra"),
+    help=(
+        "Emission: emission-only, peak-normalized.\n"
+        "Predicted: effective spectra with lasers (excitation · QY · EC)."
+    ),
+    key="mode_radio",
+)
 
+source_mode = st.sidebar.radio(
+    "Selection source",
+    ("By probes", "From readout pool", "All fluorophores", "EUB338 only"),
+    key="source_radio",
+)
 
-def _argmax_labelmap(Ahat, colors, rescale_global=False):
-    """
-    Colored label map:
-      - hue from the channel with maximum abundance per pixel
-      - brightness from that maximum abundance
-    """
-    H, W, R = Ahat.shape
-    idx = np.argmax(Ahat, axis=2)  # (H,W)
-    mx = np.max(Ahat, axis=2)      # (H,W)
-    if rescale_global:
-        m = float(mx.max())
-        if m > 0:
-            mx = mx / m
-    cols = np.asarray(colors, dtype=float)   # (R,3)
-    rgb = cols[idx] * mx[:, :, None]         # (H,W,3)
-    rgb = np.clip(rgb, 0, 1)
-    return (rgb * 255).astype(np.uint8)
+k_show = st.sidebar.slider("Show top-K similarities", 5, 50, 10, 1, key="k_show_slider")
 
-
-def _show_bw_grid(title, imgs_uint8, labels, cols_per_row=6):
-    st.markdown(f"**{title}**")
-    n = len(imgs_uint8)
-    for i in range(0, n, cols_per_row):
-        chunk_imgs = imgs_uint8[i:i + cols_per_row]
-        chunk_labels = labels[i:i + cols_per_row]
-        cols_row = st.columns(cols_per_row)
-        for j in range(cols_per_row):
-            if j < len(chunk_imgs):
-                cols_row[j].image(chunk_imgs[j], use_container_width=True, clamp=True)
-                cols_row[j].caption(chunk_labels[j])
-            else:
-                cols_row[j].markdown("&nbsp;")
-
-
-def _html_table(headers, rows, num_cols=None):
-    num_cols = num_cols or set()
-
-    def esc(x):
-        return str(x).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    thead = "".join(
-        f"<th style='padding:6px 10px;border:1px solid #ddd;text-align:left'>{esc(h)}</th>"
-        for h in headers
+laser_list = []
+laser_strategy = None
+if mode == "Predicted spectra":
+    laser_strategy = st.sidebar.radio(
+        "Laser usage", ("Simultaneous", "Separate"), key="laser_strategy_radio"
     )
-    trs = []
-    for r in rows:
-        tds = []
-        for j, v in enumerate(r):
-            text = f"{float(v):.4f}" if j in num_cols else esc(v)
-            align = "right" if j in num_cols else "left"
-            tds.append(
-                f"<td style='padding:6px 10px;border:1px solid #ddd;text-align:{align}'>{text}</td>"
-            )
-        trs.append(f"<tr>{''.join(tds)}</tr>")
-    st.markdown(
-        f"""
-        <div style="overflow-x:auto;">
-          <table style="border-collapse:collapse;width:100%;table-layout:auto;">
-            <thead><tr>{thead}</tr></thead>
-            <tbody>{''.join(trs)}</tbody>
-          </table>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ---------- small helpers for Predicted resolution ----------
-def _downsample_to_channels(E_raw, chan_nm):
-    """
-    E_raw: (W_full, N) spectra on the wl grid.
-    chan_nm: 1D array of detection channels (nm).
-    Returns: (len(chan_nm), N) spectra sampled at detection channels.
-    """
-    return cached_interpolate_E_on_channels(wl, E_raw, chan_nm)
-
-
-def _apply_mbs_mask(E_chan, chan_nm, laser_strategy, laser_list):
-    """
-    Apply MBS: in simultaneous mode with lasers == [405,488,561,639],
-    zero out MBS_ZERO_CHANNELS in detection channels.
-    """
-    if laser_strategy != "Simultaneous":
-        return E_chan
-
-    lasers_sorted = sorted(int(l) for l in laser_list)
-    if lasers_sorted != [405, 488, 561, 639]:
-        return E_chan
-
-    mask = np.isin(chan_nm, MBS_ZERO_CHANNELS)
-    if np.any(mask):
-        E_chan = E_chan.copy()
-        E_chan[mask, :] = 0.0
-    return E_chan
-
-
-def _l2_normalize_cols(E):
-    denom = np.linalg.norm(E, axis=0, keepdims=True) + 1e-12
-    return E / denom
-
-
-# -------------------- NLS + color --------------------
-def nls_unmix(Timg, E, iters=2000, tol=1e-6):
-    """Fast MU-style NLS with per-pixel normalization. Timg(H,W,C), E(C,R) -> A(H,W,R)."""
-    H, W, C = Timg.shape
-    E = np.asarray(E, dtype=np.float32)
-    if E.ndim != 2 or E.shape[0] != C:
-        raise ValueError(f"E shape {E.shape} mismatch with Timg channels {C}")
-    M = Timg.reshape(-1, C).astype(np.float32, copy=False)
-    scale = np.sqrt(np.mean(M ** 2, axis=1, keepdims=True))
-    scale[scale <= 0] = 1.0
-    Mn = M / scale
-    EtE = E.T @ E
-    A = Mn @ E @ np.linalg.pinv(EtE)
-    A[A < 0] = 0
-    for _ in range(iters):
-        numer = Mn @ E
-        denom = (A @ EtE) + 1e-12
-        ratio = numer / denom
-        A *= ratio
-        if np.max(ratio) < 1 + tol:
-            break
-    A *= scale
-    mA = float(np.max(A))
-    if mA > 0:
-        A /= mA
-    return A.reshape(H, W, E.shape[1])
-
-
-def colorize_single(A_r, color):
-    z = np.clip(A_r, 0, 1)
-    m = float(z.max())
-    if m > 0:
-        z /= m
-    return z[:, :, None] * np.asarray(color)[None, None, :]
-
-
-def colorize_composite(A, colors):
-    rgb = np.zeros((A.shape[0], A.shape[1], 3), dtype=float)
-    for r in range(A.shape[2]):
-        rgb += colorize_single(A[:, :, r], colors[r])
-    m = float(rgb.max())
-    if m > 0:
-        rgb /= m
-    return rgb
-
-
-# -------------------- Rod (capsule) scene --------------------
-def _capsule_profile(H, W, cx, cy, length, width, theta):
-    yy, xx = np.mgrid[0:H, 0:W].astype(float)
-    X = xx - cx
-    Y = yy - cy
-    c, s = np.cos(theta), np.sin(theta)
-    xp = c * X + s * Y
-    yp = -s * X + c * Y
-    half_L = 0.5 * length
-    r = 0.5 * width
-    rect = (np.abs(xp) <= half_L) & (np.abs(yp) <= r)
-    val = np.zeros((H, W))
-    if np.any(rect):
-        val[rect] = 1 - np.abs(yp[rect]) / (r + 1e-12)
-    for side in (-1, 1):
-        rho = np.sqrt((xp + side * half_L) ** 2 + yp ** 2)
-        cap = rho <= r
-        if np.any(cap):
-            val[cap] = np.maximum(val[cap], 1 - rho[cap] / (r + 1e-12))
-    return np.clip(val, 0, 1), val > 0
-
-
-def _place_rods_scene(H, W, R, rods_per=3, rng=None, max_trials_per_class=1200):
-    """
-    Non-overlapping rods (capsules). Shorter & thicker to resemble E. coli.
-    Returns Atrue(H,W,R) and per-class placed_counts(R,).
-    """
-    rng = np.random.default_rng() if rng is None else rng
-    Atrue = np.zeros((H, W, R), dtype=np.float32)
-    occ = np.zeros((H, W), dtype=bool)
-    placed_counts = np.zeros(R, dtype=int)
-
-    # E. coli–like: shorter & thicker
-    Lmin, Lmax = 18, 30
-    Wmin, Wmax = 10, 16
-
-    for r in range(R):
-        placed = 0
-        tries = 0
-        while placed < rods_per and tries < max_trials_per_class:
-            tries += 1
-            length = int(rng.integers(Lmin, Lmax + 1))
-            width = int(rng.integers(Wmin, Wmax + 1))
-            theta = float(rng.uniform(0, np.pi))
-            margin = 6 + int(max(length, width) / 2)
-            if W - 2 * margin <= 2 or H - 2 * margin <= 2:
-                break
-            cx = int(rng.integers(margin, W - margin))
-            cy = int(rng.integers(margin, H - margin))
-            prof, mask = _capsule_profile(H, W, cx, cy, length, width, theta)
-            if not np.any(mask):
-                continue
-            if np.any(occ & mask):
-                continue
-            m = float(prof.max())
-            if m > 0:
-                prof /= m
-            Atrue[:, :, r] = np.maximum(Atrue[:, :, r], prof.astype(np.float32))
-            occ |= mask
-            placed += 1
-        placed_counts[r] = placed
-
-    return np.clip(Atrue, 0, 1), placed_counts
-
-
-def _capsule_expected_area(Lmin=18, Lmax=30, Wmin=10, Wmax=16):
-    L = 0.5 * (Lmin + Lmax)
-    W = 0.5 * (Wmin + Wmax)
-    r = 0.5 * W
-    return 2 * r * L + np.pi * r * r
-
-
-def _suggest_canvas_size(R, rods_per, target_density=0.22, min_side=160):
-    area_one = _capsule_expected_area()
-    total_obj_area = R * rods_per * area_one
-    canvas_area = total_obj_area / max(1e-6, target_density)
-    side = int(np.ceil(np.sqrt(canvas_area)))
-    side = max(min_side, side)
-    return side, side
-
-
-# -------------------- Simulation core --------------------
-def simulate_rods_and_unmix(E, H=None, W=None, rods_per=3, rng=None):
-    """
-    Forward: T = Atrue ⊗ E; scale to peak=255; Poisson; NLS unmix.
-    Auto-resize canvas so each fluorophore can place 'rods_per' rods if possible.
-    E: (C,R) effective spectra on channel grid (1 nm or detection channels).
-    """
-    rng = np.random.default_rng() if rng is None else rng
-    E = np.asarray(E, dtype=float)
-    if E.ndim != 2:
-        raise ValueError(f"E must be 2D, got {E.shape}")
-    C, R = E.shape
-
-    if H is None or W is None:
-        H, W = _suggest_canvas_size(R, rods_per, target_density=0.22, min_side=160)
-
-    scale_attempts = 0
-    while True:
-        Atrue, placed = _place_rods_scene(H, W, R, rods_per, rng)
-        if np.all(placed >= rods_per):
-            break
-        if scale_attempts >= 4:
-            break
-        H = int(np.ceil(H * 1.25))
-        W = int(np.ceil(W * 1.25))
-        scale_attempts += 1
-
-    Tclean = np.zeros((H, W, C), dtype=float)
-    for c in range(C):
-        Tclean[:, :, c] = np.tensordot(Atrue, E[c, :], axes=([2], [0]))
-
-    peak = 255.0
-    Tmax = float(np.max(Tclean))
-    if Tmax <= 0:
-        Tnoisy = np.zeros_like(Tclean)
-    else:
-        lam = Tclean * (peak / Tmax)
-        lam = np.nan_to_num(lam, nan=0.0, posinf=1e6, neginf=0.0)
-        lam = np.clip(lam, 0.0, 1e6)
-        Tnoisy = rng.poisson(lam).astype(float) / peak
-
-    Ahat = nls_unmix(Tnoisy, E, iters=1500, tol=1e-6)
-    return Atrue, Ahat
-
-
-# -------------------- Main --------------------
-st.title("Fluorophore Selection for Multiplexed Imaging")
+    n = st.sidebar.number_input("Number of lasers", 1, 8, 4, 1, key="num_lasers_input")
+    cols_l = st.sidebar.columns(2)
+    defaults = [405, 488, 561, 639]
+    for i in range(n):
+        lam = cols_l[i % 2].number_input(
+            f"Laser {i+1} (nm)",
+            int(wl.min()),
+            int(max(700, wl.max())),
+            defaults[i] if i < len(defaults) else int(wl.min()),
+            1,
+            key=f"laser_{i+1}",
+        )
+        laser_list.append(int(lam))
 
 # -------------------- Source selection -> groups --------------------
 use_pool = False
@@ -579,9 +210,7 @@ if source_mode == "From readout pool":
 elif source_mode == "All fluorophores":
     pool = inventory_pool[:]
     if not pool:
-        st.error(
-            "No fluorophores found in probe_fluor_map.yaml that also exist in dyes.yaml."
-        )
+        st.error("No fluorophores found in probe_fluor_map.yaml that also exist in dyes.yaml.")
         st.stop()
     max_n = len(pool)
     N_pick = st.number_input(
@@ -619,19 +248,10 @@ else:  # "By probes"
     N_pick = None
 
 
-def _prettify_name(label: str) -> str:
-    """Map 'Probe – AF405' -> 'AF 405'; leave other names as-is."""
-    name = label.split(" – ", 1)[1] if " – " in label else label
-    up = name.upper()
-    if up.startswith("AF") and name[2:].isdigit():
-        return f"AF {name[2:]}"
-    return name
+def run(groups, mode, laser_strategy, laser_list):
+    required_count = N_pick if use_pool else None
 
-
-def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
-    required_count = (N_pick if use_pool else None)
-
-    # ---------- EMISSION-ONLY MODE ----------
+    # ---------- EMISSION MODE ----------
     if mode == "Emission spectra":
         E_norm, labels, idx_groups = build_emission_only_matrix(wl, dye_db, groups)
         if E_norm.shape[1] == 0:
@@ -639,54 +259,56 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
             st.stop()
 
         sel_idx, _ = solve_lexicographic_k(
-            E_norm, idx_groups, labels,
-            levels=10, enforce_unique=True, required_count=required_count
+            E_norm,
+            idx_groups,
+            labels,
+            levels=10,
+            enforce_unique=True,
+            required_count=required_count,
         )
 
-        # --- sort selected fluorophores by emission peak wavelength ---
-        # labels_sel_tmp 用于计算排序
+        # sort selection by emission peak wavelength
         labels_sel_tmp = [labels[j] for j in sel_idx]
-        order, _ = _sorted_order_by_peak(labels_sel_tmp)
+        order, _ = sorted_order_by_peak(labels_sel_tmp)
         sel_idx = [sel_idx[i] for i in order]
 
-        colors = _ensure_colors(len(sel_idx))
-
+        colors = ensure_colors(len(sel_idx))
 
         # Selected fluorophores table
         if use_pool:
             fluors = [labels[j].split(" – ", 1)[1] for j in sel_idx]
-            st.subheader("Selected Fluorophores")
-            _html_two_row_table(
+            st.subheader("Selected fluorophores")
+            html_two_row_table(
                 "Slot",
                 "Fluorophore",
-                [f"Slot {i + 1}" for i in range(len(fluors))],
+                [f"Slot {i+1}" for i in range(len(fluors))],
                 fluors,
             )
         else:
             sel_pairs = [labels[j] for j in sel_idx]
-            st.subheader("Selected Fluorophores")
-            _html_two_row_table(
+            st.subheader("Selected fluorophores")
+            html_two_row_table(
                 "Probe",
                 "Fluorophore",
                 [s.split(" – ", 1)[0] for s in sel_pairs],
                 [s.split(" – ", 1)[1] for s in sel_pairs],
             )
 
-        # Pairwise similarities
+        # Pairwise similarity
         S = cosine_similarity_matrix(E_norm[:, sel_idx])
         tops = top_k_pairwise(S, [labels[j] for j in sel_idx], k=k_show)
         st.subheader("Top pairwise similarities")
-        _html_two_row_table(
+        html_two_row_table(
             "Pair",
             "Similarity",
-            [_pair_only_fluor(a, b) for _, a, b in tops],
+            [pair_only_fluor(a, b) for _, a, b in tops],
             [val for val, _, _ in tops],
             color_second_row=True,
             color_thresh=0.9,
             fmt2=True,
         )
 
-        # Spectra viewer (normalized emission-only)
+        # Spectra viewer (emission-only, wavelength grid)
         st.subheader("Spectra viewer")
         fig = go.Figure()
         for t, j in enumerate(sel_idx):
@@ -698,7 +320,7 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
                     y=y,
                     mode="lines",
                     name=labels[j],
-                    line=dict(color=_rgb01_to_plotly(colors[t]), width=2),
+                    line=dict(color=rgb01_to_plotly(colors[t]), width=2),
                 )
             )
         fig.update_layout(
@@ -708,14 +330,17 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # ---------- Simulations (Emission mode) ----------
+        # ---------- Simulation ----------
+        C = len(DETECTION_CHANNELS)
         chan = DETECTION_CHANNELS
-        E_sim = cached_interpolate_E_on_channels(wl, E_norm[:, sel_idx], chan)
-        Atrue, Ahat = simulate_rods_and_unmix(E_sim, rods_per=3)
+        # interpolate selected spectra onto detection channels
+        E_chan = cached_interpolate_E_on_channels(wl, E_norm[:, sel_idx], chan)
+
+        Atrue, Ahat = simulate_rods_and_unmix(E_chan, rods_per=3)
 
         colL, colR = st.columns(2)
         true_rgb = (colorize_composite(Atrue, colors) * 255).astype(np.uint8)
-        labelmap_rgb = _argmax_labelmap(Ahat, colors)
+        labelmap_rgb = argmax_labelmap(Ahat, colors)
         with colL:
             st.image(true_rgb, use_container_width=True, clamp=True)
             st.caption("True")
@@ -723,27 +348,58 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
             st.image(labelmap_rgb, use_container_width=True, clamp=True)
             st.caption("Unmixing results")
 
-        names = [_prettify_name(labels[j]) for j in sel_idx]
-        unmix_bw = [_to_uint8_gray(Ahat[:, :, r]) for r in range(Ahat.shape[2])]
+        names = [prettify_name(labels[j]) for j in sel_idx]
+        unmix_bw = [to_uint8_gray(Ahat[:, :, r]) for r in range(Ahat.shape[2])]
+
         st.divider()
-        _show_bw_grid(
-            "Per-fluorophore (Unmixing, grayscale)", unmix_bw, names, cols_per_row=6
+        show_bw_grid("Per-fluorophore (Unmixing, grayscale)", unmix_bw, names, cols_per_row=6)
+
+        # proportion & accuracy
+        prop_vals, acc_vals = compute_prop_and_accuracy(Atrue, Ahat)
+        prop_show = [v if np.isfinite(v) else "" for v in prop_vals]
+        acc_show = [v if np.isfinite(v) else "" for v in acc_vals]
+
+        metric_header(
+            "Per-fluorophore proportion",
+            "For each fluorophore, we look at pixels where its true abundance is nonzero "
+            "and compute A_r / sum_k A_k, then average these ratios (ignoring pixels where the sum is zero).",
+        )
+        html_two_row_table(
+            "Fluorophore",
+            "Proportion",
+            names,
+            prop_show,
+            fmt2=True,
         )
 
-        # Per-fluorophore RMSE
+        metric_header(
+            "Per-fluorophore accuracy",
+            "For each fluorophore, among pixels where its true abundance is nonzero, "
+            "accuracy is the fraction of pixels where this fluorophore has the largest estimated abundance.",
+        )
+        html_two_row_table(
+            "Fluorophore",
+            "Accuracy",
+            names,
+            acc_show,
+            fmt2=True,
+        )
+
+        # RMSE
         rmse_vals = []
         for r in range(len(names)):
             rmse_vals.append(
                 np.sqrt(np.mean((Ahat[:, :, r] - Atrue[:, :, r]) ** 2))
             )
         st.subheader("Per-fluorophore RMSE")
-        _html_two_row_table(
-            row0_label="Fluorophore",
-            row1_label="RMSE",
-            row0_vals=names,
-            row1_vals=rmse_vals,
+        html_two_row_table(
+            "Fluorophore",
+            "RMSE",
+            names,
+            rmse_vals,
             fmt2=True,
         )
+
         return
 
     # ---------- PREDICTED MODE ----------
@@ -752,59 +408,55 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
             st.error("Please specify laser wavelengths.")
             st.stop()
 
-        # ---------- Round A: provisional selection on emission-only ----------
-        E0_full, labels0, idx0 = build_emission_only_matrix(wl, dye_db, groups)
-
-        if pred_res_mode == "1 nm (general use)":
-            E0_for_opt = E0_full
-        else:
-            # Valm lab: downsample emission spectra to detection channels before optimization
-            E0_chan = _downsample_to_channels(E0_full, DETECTION_CHANNELS)
-            E0_for_opt = _l2_normalize_cols(E0_chan)
-
+        # Round A: provisional selection on emission-only
+        E0, labels0, idx0 = build_emission_only_matrix(wl, dye_db, groups)
         sel0, _ = solve_lexicographic_k(
-            E0_for_opt, idx0, labels0,
-            levels=10, enforce_unique=True, required_count=required_count
+            E0,
+            idx0,
+            labels0,
+            levels=10,
+            enforce_unique=True,
+            required_count=required_count,
         )
         A_labels = [labels0[j] for j in sel0]
 
         # (1) powers on provisional set
         if laser_strategy == "Simultaneous":
-            powers_A, _ = derive_powers_simultaneous(wl, dye_db, A_labels, laser_list)
+            powers_A, _ = derive_powers_simultaneous(
+                wl, dye_db, A_labels, laser_list
+            )
         else:
-            powers_A, _ = derive_powers_separate(wl, dye_db, A_labels, laser_list)
+            powers_A, _ = derive_powers_separate(
+                wl, dye_db, A_labels, laser_list
+            )
 
-        # Build effective spectra for ALL candidates on 1 nm wl grid
+        # First build (all candidates, with lasers)
         E_raw_all, E_norm_all, labels_all, idx_all = cached_build_effective_with_lasers(
             wl, dye_db, groups, laser_list, laser_strategy, powers_A
         )
 
-        # ---------- Final selection depending on spectral resolution ----------
-        if pred_res_mode == "1 nm (general use)":
-            # Use full 1 nm effective spectra for optimization
-            E_for_opt = E_norm_all
-        else:
-            # Valm lab: downsample effective spectra to detection channels, apply MBS, then L2 normalize
-            E_chan_all = _downsample_to_channels(E_raw_all, DETECTION_CHANNELS)
-            E_chan_all = _apply_mbs_mask(
-                E_chan_all, DETECTION_CHANNELS, laser_strategy, laser_list
-            )
-            E_for_opt = _l2_normalize_cols(E_chan_all)
-
+        # Use effective spectra (1 nm grid) for final selection
         sel_idx, _ = solve_lexicographic_k(
-            E_for_opt, idx_all, labels_all,
-            levels=10, enforce_unique=True, required_count=required_count
+            E_norm_all,
+            idx_all,
+            labels_all,
+            levels=10,
+            enforce_unique=True,
+            required_count=required_count,
         )
         final_labels = [labels_all[j] for j in sel_idx]
 
-        # (2) recalibrate powers on final set (still using 1 nm data)
+        # (2) recalibrate on final set
         if laser_strategy == "Simultaneous":
-            powers, B = derive_powers_simultaneous(wl, dye_db, final_labels, laser_list)
+            powers, B = derive_powers_simultaneous(
+                wl, dye_db, final_labels, laser_list
+            )
         else:
-            powers, B = derive_powers_separate(wl, dye_db, final_labels, laser_list)
+            powers, B = derive_powers_separate(
+                wl, dye_db, final_labels, laser_list
+            )
 
-        # Build only selected subset on 1 nm grid
-                # Build only selected subset
+        # Build only selected subset
         if use_pool:
             small_groups = {"Pool": [s.split(" – ", 1)[1] for s in final_labels]}
         else:
@@ -817,116 +469,71 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
             wl, dye_db, small_groups, laser_list, laser_strategy, powers
         )
 
-        # --- sort by emission peak wavelength ---
+        # sort by emission peak wavelength
         if labels_sel:
-            order, labels_sel = _sorted_order_by_peak(labels_sel)
+            order, labels_sel = sorted_order_by_peak(labels_sel)
             E_raw_sel = E_raw_sel[:, order]
             E_norm_sel = E_norm_sel[:, order]
 
-        colors = _ensure_colors(len(labels_sel))
-
+        colors = ensure_colors(len(labels_sel))
 
         # Selected fluorophores table
-        st.subheader("Selected Fluorophores (with lasers)")
+        st.subheader("Selected fluorophores (with lasers)")
         fluors = [s.split(" – ", 1)[1] for s in labels_sel]
-        _html_two_row_table(
+        html_two_row_table(
             "Slot",
             "Fluorophore",
-            [f"Slot {i + 1}" for i in range(len(fluors))],
+            [f"Slot {i+1}" for i in range(len(fluors))],
             fluors,
         )
 
-        # Pairwise similarities (on the same grid used for optimization)
-        if pred_res_mode == "1 nm (general use)":
-            S = cosine_similarity_matrix(E_norm_sel)
-        else:
-            E_chan_sel_for_sim = _downsample_to_channels(E_raw_sel, DETECTION_CHANNELS)
-            E_chan_sel_for_sim = _apply_mbs_mask(
-                E_chan_sel_for_sim, DETECTION_CHANNELS, laser_strategy, laser_list
-            )
-            E_norm_sel_chan = _l2_normalize_cols(E_chan_sel_for_sim)
-            S = cosine_similarity_matrix(E_norm_sel_chan)
-
+        # Pairwise similarity
+        S = cosine_similarity_matrix(E_norm_sel)
         tops = top_k_pairwise(S, labels_sel, k=k_show)
         st.subheader("Top pairwise similarities")
-        _html_two_row_table(
+        html_two_row_table(
             "Pair",
             "Similarity",
-            [_pair_only_fluor(a, b) for _, a, b in tops],
+            [pair_only_fluor(a, b) for _, a, b in tops],
             [val for val, _, _ in tops],
             color_second_row=True,
             color_thresh=0.9,
             fmt2=True,
         )
 
-                # Spectra viewer
+        # Spectra viewer
         st.subheader("Spectra viewer")
         fig = go.Figure()
-
-        if pred_res_mode == "1 nm (general use)":
-            # Plot on the full 1 nm grid
-            x_axis = wl
-            y_label = "Normalized intensity (relative to B)"
-            for t in range(len(labels_sel)):
-                y = E_raw_sel[:, t] / (B + 1e-12)
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_axis,
-                        y=y,
-                        mode="lines",
-                        name=labels_sel[t],
-                        line=dict(color=_rgb01_to_plotly(colors[t]), width=2),
-                    )
+        for t in range(len(labels_sel)):
+            y = E_raw_sel[:, t] / (B + 1e-12)
+            fig.add_trace(
+                go.Scatter(
+                    x=wl,
+                    y=y,
+                    mode="lines",
+                    name=labels_sel[t],
+                    line=dict(color=rgb01_to_plotly(colors[t]), width=2),
                 )
-        else:
-            # Valm lab mode: plot on detection channels (8.9 nm spacing)
-            chan = DETECTION_CHANNELS
-            # First normalize by B on the 1 nm grid, then sample to channels
-            E_plot_chan = _downsample_to_channels(E_raw_sel / (B + 1e-12), chan)
-            # Apply MBS zeroing for the 405/488/561/639 Simultaneous case
-            E_plot_chan = _apply_mbs_mask(
-                E_plot_chan, chan, laser_strategy, laser_list
             )
-            x_axis = chan
-            y_label = "Normalized intensity on detection channels"
-            for t in range(len(labels_sel)):
-                y = E_plot_chan[:, t]
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_axis,
-                        y=y,
-                        mode="lines",
-                        name=labels_sel[t],
-                        line=dict(color=_rgb01_to_plotly(colors[t]), width=2),
-                    )
-                )
-
         fig.update_layout(
             xaxis_title="Wavelength (nm)",
-            yaxis_title=y_label,
+            yaxis_title="Normalized intensity (relative to B)",
             yaxis=dict(range=[0, 1.05]),
         )
         st.plotly_chart(fig, use_container_width=True)
 
+        # ---------- Simulation ----------
+        chan = DETECTION_CHANNELS
+        # interpolate effective spectra onto detection channels (normalized by B)
+        E_chan = cached_interpolate_E_on_channels(
+            wl, E_raw_sel / (B + 1e-12), chan
+        )
 
-        # ---------- Simulations (Predicted mode) ----------
-        if pred_res_mode == "1 nm (general use)":
-            # Use full 1 nm grid as "channels"
-            E_sim = (E_raw_sel / (B + 1e-12))  # (W_full, R)
-        else:
-            # Valm lab: use detection channels, with MBS zeroing
-            chan = DETECTION_CHANNELS
-            E_chan_sel = _downsample_to_channels(E_raw_sel / (B + 1e-12), chan)
-            E_chan_sel = _apply_mbs_mask(
-                E_chan_sel, chan, laser_strategy, laser_list
-            )
-            E_sim = E_chan_sel  # (C,R) on detection channels
-
-        Atrue, Ahat = simulate_rods_and_unmix(E_sim, rods_per=3)
+        Atrue, Ahat = simulate_rods_and_unmix(E_chan, rods_per=3)
 
         colL, colR = st.columns(2)
         true_rgb = (colorize_composite(Atrue, colors) * 255).astype(np.uint8)
-        labelmap_rgb = _argmax_labelmap(Ahat, colors)
+        labelmap_rgb = argmax_labelmap(Ahat, colors)
         with colL:
             st.image(true_rgb, use_container_width=True, clamp=True)
             st.caption("True")
@@ -934,29 +541,62 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
             st.image(labelmap_rgb, use_container_width=True, clamp=True)
             st.caption("Unmixing results")
 
-        names = [_prettify_name(s) for s in labels_sel]
-        unmix_bw = [_to_uint8_gray(Ahat[:, :, r]) for r in range(Ahat.shape[2])]
+        names = [prettify_name(s) for s in labels_sel]
+        unmix_bw = [to_uint8_gray(Ahat[:, :, r]) for r in range(Ahat.shape[2])]
+
         st.divider()
-        _show_bw_grid(
-            "Per-fluorophore (Unmixing, grayscale)", unmix_bw, names, cols_per_row=6
+        show_bw_grid("Per-fluorophore (Unmixing, grayscale)", unmix_bw, names, cols_per_row=6)
+
+        # proportion & accuracy
+        prop_vals, acc_vals = compute_prop_and_accuracy(Atrue, Ahat)
+        prop_show = [v if np.isfinite(v) else "" for v in prop_vals]
+        acc_show = [v if np.isfinite(v) else "" for v in acc_vals]
+
+        metric_header(
+            "Per-fluorophore proportion",
+            "For each fluorophore, we look at pixels where its true abundance is nonzero "
+            "and compute A_r / sum_k A_k, then average these ratios (ignoring pixels where the sum is zero).",
+        )
+        html_two_row_table(
+            "Fluorophore",
+            "Proportion",
+            names,
+            prop_show,
+            fmt2=True,
         )
 
+        metric_header(
+            "Per-fluorophore accuracy",
+            "For each fluorophore, among pixels where its true abundance is nonzero, "
+            "accuracy is the fraction of pixels where this fluorophore has the largest estimated abundance.",
+        )
+        html_two_row_table(
+            "Fluorophore",
+            "Accuracy",
+            names,
+            acc_show,
+            fmt2=True,
+        )
+
+        # RMSE
         rmse_vals = []
         for r in range(len(names)):
             rmse_vals.append(
                 np.sqrt(np.mean((Ahat[:, :, r] - Atrue[:, :, r]) ** 2))
             )
         st.subheader("Per-fluorophore RMSE")
-        _html_two_row_table(
-            row0_label="Fluorophore",
-            row1_label="RMSE",
-            row0_vals=names,
-            row1_vals=rmse_vals,
+        html_two_row_table(
+            "Fluorophore",
+            "RMSE",
+            names,
+            rmse_vals,
             fmt2=True,
         )
+
         return
 
 
 # -------------------- Execute --------------------
 if __name__ == "__main__":
-    run(groups, mode, laser_strategy, laser_list, pred_res_mode)
+    st.title("Fluorophore Selection for Multiplexed Imaging")
+    run(groups, mode, laser_strategy, laser_list)
