@@ -176,6 +176,61 @@ def apply_mbs_zeroing(E_raw_on_det, laser_strategy, spec_res_mode, laser_list):
         E_raw_on_det[mask, :] = 0.0
     return E_raw_on_det
 
+def render_metrics_table(names, rmse_vals, prop_vals, acc_vals):
+    """
+    Render a 3 x N metrics table:
+      - rows: RMSE, Proportion, Accuracy
+      - columns: fluorophore names
+    """
+    # helper for escaping HTML
+    def esc(x):
+        return str(x).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # format numeric values; keep empty for NaN/inf
+    def fmt(v):
+        try:
+            v = float(v)
+        except Exception:
+            return esc(v)
+        if not np.isfinite(v):
+            return ""
+        return f"{v:.4f}"
+
+    headers = ["Measurement"] + [esc(n) for n in names]
+
+    rows = [
+        ["RMSE"]       + [fmt(v) for v in rmse_vals],
+        ["Proportion"] + [fmt(v) for v in prop_vals],
+        ["Accuracy"]   + [fmt(v) for v in acc_vals],
+    ]
+
+    # build thead
+    thead = "".join(
+        f"<th style='padding:6px 10px;border:1px solid #ddd;text-align:left'>{h}</th>"
+        for h in headers
+    )
+
+    # build tbody
+    trs = []
+    for r in rows:
+        tds = []
+        for j, cell in enumerate(r):
+            align = "left" if j == 0 else "right"
+            tds.append(
+                f"<td style='padding:6px 10px;border:1px solid #ddd;text-align:{align}'>{cell}</td>"
+            )
+        trs.append(f"<tr>{''.join(tds)}</tr>")
+
+    html = f"""
+    <div style="overflow-x:auto;">
+      <table style="border-collapse:collapse;width:100%;table-layout:auto;">
+        <thead><tr>{thead}</tr></thead>
+        <tbody>{''.join(trs)}</tbody>
+      </table>
+    </div>
+    """
+
+    st.markdown(html, unsafe_allow_html=True)
 
 # -------------------- Sidebar --------------------
 st.sidebar.header("Configuration")
@@ -398,36 +453,8 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
         st.divider()
         show_bw_grid("Per-fluorophore (Unmixing, grayscale)", unmix_bw, names, cols_per_row=6)
 
-        # proportion & accuracy
+         # proportion & accuracy
         prop_vals, acc_vals = compute_prop_and_accuracy(Atrue, Ahat)
-        prop_show = [v if np.isfinite(v) else "" for v in prop_vals]
-        acc_show = [v if np.isfinite(v) else "" for v in acc_vals]
-
-        metric_header(
-            "Per-fluorophore proportion",
-            "For each fluorophore, we look at pixels where its true abundance is nonzero "
-            "and compute A_r / sum_k A_k, then average these ratios (ignoring pixels where the sum is zero).",
-        )
-        html_two_row_table(
-            "Fluorophore",
-            "Proportion",
-            names,
-            prop_show,
-            fmt2=True,
-        )
-
-        metric_header(
-            "Per-fluorophore accuracy",
-            "For each fluorophore, among pixels where its true abundance is nonzero, "
-            "accuracy is the fraction of pixels where this fluorophore has the largest estimated abundance.",
-        )
-        html_two_row_table(
-            "Fluorophore",
-            "Accuracy",
-            names,
-            acc_show,
-            fmt2=True,
-        )
 
         # RMSE
         rmse_vals = []
@@ -435,14 +462,18 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             rmse_vals.append(
                 np.sqrt(np.mean((Ahat[:, :, r] - Atrue[:, :, r]) ** 2))
             )
-        st.subheader("Per-fluorophore RMSE")
-        html_two_row_table(
-            "Fluorophore",
-            "RMSE",
-            names,
-            rmse_vals,
-            fmt2=True,
+
+        # one combined metrics table
+        metric_header(
+            "Per-fluorophore metrics",
+            "RMSE: Root-mean-square error of the estimated abundance map for each fluorophore. "
+            "Proportion: For each fluorophore, we look at pixels where its true abundance is nonzero "
+            "and compute A_r / sum_k A_k, then average these ratios (ignoring pixels where the sum is zero). "
+            "Accuracy: For each fluorophore, among pixels where its true abundance is nonzero, "
+            "accuracy is the fraction of pixels where this fluorophore has the largest estimated abundance.",
         )
+        render_metrics_table(names, rmse_vals, prop_vals, acc_vals)
+
 
         return
 
@@ -634,34 +665,6 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
 
         # proportion & accuracy
         prop_vals, acc_vals = compute_prop_and_accuracy(Atrue, Ahat)
-        prop_show = [v if np.isfinite(v) else "" for v in prop_vals]
-        acc_show = [v if np.isfinite(v) else "" for v in acc_vals]
-
-        metric_header(
-            "Per-fluorophore proportion",
-            "For each fluorophore, we look at pixels where its true abundance is nonzero "
-            "and compute A_r / sum_k A_k, then average these ratios (ignoring pixels where the sum is zero).",
-        )
-        html_two_row_table(
-            "Fluorophore",
-            "Proportion",
-            names,
-            prop_show,
-            fmt2=True,
-        )
-
-        metric_header(
-            "Per-fluorophore accuracy",
-            "For each fluorophore, among pixels where its true abundance is nonzero, "
-            "accuracy is the fraction of pixels where this fluorophore has the largest estimated abundance.",
-        )
-        html_two_row_table(
-            "Fluorophore",
-            "Accuracy",
-            names,
-            acc_show,
-            fmt2=True,
-        )
 
         # RMSE
         rmse_vals = []
@@ -669,14 +672,18 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             rmse_vals.append(
                 np.sqrt(np.mean((Ahat[:, :, r] - Atrue[:, :, r]) ** 2))
             )
-        st.subheader("Per-fluorophore RMSE")
-        html_two_row_table(
-            "Fluorophore",
-            "RMSE",
-            names,
-            rmse_vals,
-            fmt2=True,
+
+        # one combined metrics table
+        metric_header(
+            "Per-fluorophore metrics",
+            "RMSE: Root-mean-square error of the estimated abundance map for each fluorophore. "
+            "Proportion: For each fluorophore, we look at pixels where its true abundance is nonzero "
+            "and compute A_r / sum_k A_k, then average these ratios (ignoring pixels where the sum is zero). "
+            "Accuracy: For each fluorophore, among pixels where its true abundance is nonzero, "
+            "accuracy is the fraction of pixels where this fluorophore has the largest estimated abundance.",
         )
+        render_metrics_table(names, rmse_vals, prop_vals, acc_vals)
+
 
         return
 
