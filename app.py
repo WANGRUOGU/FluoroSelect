@@ -42,7 +42,8 @@ probe_map = load_probe_fluor_map(PROBE_MAP_YAML)
 
 def _load_readout_pool(path):
     try:
-        import yaml, os
+        import yaml
+        import os
 
         if not os.path.exists(path):
             return []
@@ -59,7 +60,7 @@ readout_pool = _load_readout_pool(READOUT_POOL_YAML)
 
 
 def _get_inventory_from_probe_map():
-    """Union of all fluorophores that appear anywhere in probe_fluor_map.yaml and exist in dyes.yaml."""
+    """Union of all fluorophores appearing in probe_fluor_map.yaml that exist in dyes.yaml."""
     inv = set()
     for _, vals in probe_map.items():
         if not isinstance(vals, (list, tuple)):
@@ -153,8 +154,32 @@ def cached_interpolate_E_on_channels(wl, spectra_cols, chan_centers_nm):
     return np.nan_to_num(E, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def apply_mbs_zeroing(E_raw_on_det, laser_strategy, spec_res_mode, laser_list):
+    """
+    In Simultaneous + Valm-lab 33-channel mode, if lasers are [405,488,561,639],
+    zero out MBS-blocked detection channels:
+      414, 486, 557, 566, 628, 637, 646 nm.
+    """
+    if spec_res_mode != "33 detection channels (Valm lab)":
+        return E_raw_on_det
+    if laser_strategy != "Simultaneous":
+        return E_raw_on_det
+    try:
+        if sorted(int(l) for l in laser_list) != [405, 488, 561, 639]:
+            return E_raw_on_det
+    except Exception:
+        return E_raw_on_det
+
+    blocked = np.array([414, 486, 557, 566, 628, 637, 646], dtype=float)
+    mask = np.isin(DETECTION_CHANNELS, blocked)
+    if E_raw_on_det.ndim == 2:
+        E_raw_on_det[mask, :] = 0.0
+    return E_raw_on_det
+
+
 # -------------------- Sidebar --------------------
 st.sidebar.header("Configuration")
+
 mode = st.sidebar.radio(
     "Mode",
     options=("Emission spectra", "Predicted spectra"),
@@ -175,10 +200,22 @@ k_show = st.sidebar.slider("Show top-K similarities", 5, 50, 10, 1, key="k_show_
 
 laser_list = []
 laser_strategy = None
+spec_res_mode = "1 nm (general)"
+
 if mode == "Predicted spectra":
     laser_strategy = st.sidebar.radio(
         "Laser usage", ("Simultaneous", "Separate"), key="laser_strategy_radio"
     )
+    # Spectral resolution choice (only meaningful for Simultaneous)
+    if laser_strategy == "Simultaneous":
+        spec_res_mode = st.sidebar.radio(
+            "Spectral resolution",
+            ("1 nm (general)", "33 detection channels (Valm lab)"),
+            key="spec_res_radio",
+        )
+    else:
+        spec_res_mode = "1 nm (general)"
+
     n = st.sidebar.number_input("Number of lasers", 1, 8, 4, 1, key="num_lasers_input")
     cols_l = st.sidebar.columns(2)
     defaults = [405, 488, 561, 639]
@@ -248,7 +285,7 @@ else:  # "By probes"
     N_pick = None
 
 
-def run(groups, mode, laser_strategy, laser_list):
+def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
     required_count = N_pick if use_pool else None
 
     # ---------- EMISSION MODE ----------
@@ -331,11 +368,8 @@ def run(groups, mode, laser_strategy, laser_list):
         st.plotly_chart(fig, use_container_width=True)
 
         # ---------- Simulation ----------
-        C = len(DETECTION_CHANNELS)
         chan = DETECTION_CHANNELS
-        # interpolate selected spectra onto detection channels
         E_chan = cached_interpolate_E_on_channels(wl, E_norm[:, sel_idx], chan)
-
         Atrue, Ahat = simulate_rods_and_unmix(E_chan, rods_per=3)
 
         colL, colR = st.columns(2)
@@ -430,14 +464,31 @@ def run(groups, mode, laser_strategy, laser_list):
                 wl, dye_db, A_labels, laser_list
             )
 
-        # First build (all candidates, with lasers)
+        # First build (all candidates, with lasers) at 1 nm grid
         E_raw_all, E_norm_all, labels_all, idx_all = cached_build_effective_with_lasers(
             wl, dye_db, groups, laser_list, laser_strategy, powers_A
         )
 
-        # Use effective spectra (1 nm grid) for final selection
+        # For selection + similarity: choose resolution
+        if (
+            spec_res_mode == "33 detection channels (Valm lab)"
+            and laser_strategy == "Simultaneous"
+        ):
+            # Compress 1 nm spectra to 33 detection channels
+            E_raw_all_33 = cached_interpolate_E_on_channels(
+                wl, E_raw_all, DETECTION_CHANNELS
+            )
+            E_raw_all_33 = apply_mbs_zeroing(
+                E_raw_all_33, laser_strategy, spec_res_mode, laser_list
+            )
+            denom_all = np.linalg.norm(E_raw_all_33, axis=0, keepdims=True) + 1e-12
+            E_norm_for_select = E_raw_all_33 / denom_all
+        else:
+            E_norm_for_select = E_norm_all
+
+        # Lexicographic selection
         sel_idx, _ = solve_lexicographic_k(
-            E_norm_all,
+            E_norm_for_select,
             idx_all,
             labels_all,
             levels=10,
@@ -456,7 +507,7 @@ def run(groups, mode, laser_strategy, laser_list):
                 wl, dye_db, final_labels, laser_list
             )
 
-        # Build only selected subset
+        # Build final spectra at 1 nm grid (only selected set)
         if use_pool:
             small_groups = {"Pool": [s.split(" – ", 1)[1] for s in final_labels]}
         else:
@@ -465,9 +516,29 @@ def run(groups, mode, laser_strategy, laser_list):
                 p, f = s.split(" – ", 1)
                 small_groups.setdefault(p, []).append(f)
 
-        E_raw_sel, E_norm_sel, labels_sel, _ = cached_build_effective_with_lasers(
+        E_raw_sel_1nm, E_norm_sel_1nm, labels_sel, _ = cached_build_effective_with_lasers(
             wl, dye_db, small_groups, laser_list, laser_strategy, powers
         )
+
+        # For display / simulation: choose final resolution
+        if (
+            spec_res_mode == "33 detection channels (Valm lab)"
+            and laser_strategy == "Simultaneous"
+        ):
+            # Compress to 33 detection channels
+            E_raw_sel = cached_interpolate_E_on_channels(
+                wl, E_raw_sel_1nm, DETECTION_CHANNELS
+            )
+            E_raw_sel = apply_mbs_zeroing(
+                E_raw_sel, laser_strategy, spec_res_mode, laser_list
+            )
+            denom_sel = np.linalg.norm(E_raw_sel, axis=0, keepdims=True) + 1e-12
+            E_norm_sel = E_raw_sel / denom_sel
+            x_axis = DETECTION_CHANNELS
+        else:
+            E_raw_sel = E_raw_sel_1nm
+            E_norm_sel = E_norm_sel_1nm
+            x_axis = wl
 
         # sort by emission peak wavelength
         if labels_sel:
@@ -508,7 +579,7 @@ def run(groups, mode, laser_strategy, laser_list):
             y = E_raw_sel[:, t] / (B + 1e-12)
             fig.add_trace(
                 go.Scatter(
-                    x=wl,
+                    x=x_axis,
                     y=y,
                     mode="lines",
                     name=labels_sel[t],
@@ -523,11 +594,15 @@ def run(groups, mode, laser_strategy, laser_list):
         st.plotly_chart(fig, use_container_width=True)
 
         # ---------- Simulation ----------
-        chan = DETECTION_CHANNELS
-        # interpolate effective spectra onto detection channels (normalized by B)
-        E_chan = cached_interpolate_E_on_channels(
-            wl, E_raw_sel / (B + 1e-12), chan
-        )
+        if (
+            spec_res_mode == "33 detection channels (Valm lab)"
+            and laser_strategy == "Simultaneous"
+        ):
+            chan = DETECTION_CHANNELS
+            E_chan = E_raw_sel / (B + 1e-12)
+        else:
+            chan = wl
+            E_chan = E_raw_sel / (B + 1e-12)
 
         Atrue, Ahat = simulate_rods_and_unmix(E_chan, rods_per=3)
 
@@ -597,6 +672,5 @@ def run(groups, mode, laser_strategy, laser_list):
 
 
 # -------------------- Execute --------------------
-if __name__ == "__main__":
-    st.title("Fluorophore Selection for Multiplexed Imaging")
-    run(groups, mode, laser_strategy, laser_list)
+st.title("Fluorophore Selection for Multiplexed Imaging")
+run(groups, mode, laser_strategy, laser_list, spec_res_mode)
