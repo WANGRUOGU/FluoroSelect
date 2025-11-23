@@ -816,26 +816,55 @@ def run(groups, mode, laser_strategy, laser_list, pred_res_mode):
             fmt2=True,
         )
 
-        # Spectra viewer (always 1 nm for visualization)
+                # Spectra viewer
         st.subheader("Spectra viewer")
         fig = go.Figure()
-        for t in range(len(labels_sel)):
-            y = E_raw_sel[:, t] / (B + 1e-12)
-            fig.add_trace(
-                go.Scatter(
-                    x=wl,
-                    y=y,
-                    mode="lines",
-                    name=labels_sel[t],
-                    line=dict(color=_rgb01_to_plotly(colors[t]), width=2),
+
+        if pred_res_mode == "1 nm (general use)":
+            # Plot on the full 1 nm grid
+            x_axis = wl
+            y_label = "Normalized intensity (relative to B)"
+            for t in range(len(labels_sel)):
+                y = E_raw_sel[:, t] / (B + 1e-12)
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_axis,
+                        y=y,
+                        mode="lines",
+                        name=labels_sel[t],
+                        line=dict(color=_rgb01_to_plotly(colors[t]), width=2),
+                    )
                 )
+        else:
+            # Valm lab mode: plot on detection channels (8.9 nm spacing)
+            chan = DETECTION_CHANNELS
+            # First normalize by B on the 1 nm grid, then sample to channels
+            E_plot_chan = _downsample_to_channels(E_raw_sel / (B + 1e-12), chan)
+            # Apply MBS zeroing for the 405/488/561/639 Simultaneous case
+            E_plot_chan = _apply_mbs_mask(
+                E_plot_chan, chan, laser_strategy, laser_list
             )
+            x_axis = chan
+            y_label = "Normalized intensity on detection channels"
+            for t in range(len(labels_sel)):
+                y = E_plot_chan[:, t]
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_axis,
+                        y=y,
+                        mode="lines",
+                        name=labels_sel[t],
+                        line=dict(color=_rgb01_to_plotly(colors[t]), width=2),
+                    )
+                )
+
         fig.update_layout(
             xaxis_title="Wavelength (nm)",
-            yaxis_title="Normalized intensity (relative to B)",
+            yaxis_title=y_label,
             yaxis=dict(range=[0, 1.05]),
         )
         st.plotly_chart(fig, use_container_width=True)
+
 
         # ---------- Simulations (Predicted mode) ----------
         if pred_res_mode == "1 nm (general use)":
