@@ -128,6 +128,53 @@ def sorted_order_by_peak(labels_list):
     sorted_labels = [labels_list[i] for i in order]
     return order, sorted_labels
 
+def select_worst_group(E_norm, labels, idx_groups, required_count, use_pool):
+    """
+    Heuristic 'worst group' selector:
+    - Compute cosine similarity for all candidates.
+    - For each column, use its maximum similarity to any other column as a score.
+    - Pool mode: pick the required_count columns with largest scores.
+    - By-probes mode: for each probe group, pick the candidate with the largest score,
+      enforcing global fluorophore uniqueness as much as possible.
+    """
+    if E_norm.size == 0:
+        return []
+
+    S = cosine_similarity_matrix(E_norm)
+    # S[i, i] 已经在 cosine_similarity_matrix 里被设为 0 了
+    max_sim = np.max(S, axis=1)  # 每个 candidate 与其它 candidate 的最大相似度
+
+    if use_pool:
+        # 单 pool：直接按 max_sim 从大到小取
+        if required_count is None:
+            required_count = len(E_norm.shape[1])
+        order = np.argsort(-max_sim)  # descending
+        return [int(i) for i in order[: required_count]]
+
+    # By-probes：每个 probe 选一个“最相似”的 fluorophore，同时尽量保持全局 unique
+    worst = []
+    used_dyes = set()
+    for idxs in idx_groups:
+        if not idxs:
+            continue
+        best_j = None
+        best_score = -1.0
+        # 先在未使用的染料中找分数最高的
+        for j in idxs:
+            dye = labels[j].split(" – ", 1)[1]
+            if dye in used_dyes:
+                continue
+            score = max_sim[j]
+            if score > best_score:
+                best_score = score
+                best_j = j
+        # 如果这个 group 里所有候选都已经被用过了，就允许重复，用分数最高的
+        if best_j is None:
+            best_j = max(idxs, key=lambda j: max_sim[j])
+        worst.append(int(best_j))
+        used_dyes.add(labels[best_j].split(" – ", 1)[1])
+
+    return worst
 
 @st.cache_data(show_spinner=False)
 def cached_build_effective_with_lasers(wl, dye_db, groups, laser_list, laser_strategy, powers):
@@ -360,7 +407,7 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             st.error("No spectra.")
             st.stop()
 
-        sel_idx, _ = solve_lexicographic_k(
+                sel_idx, _ = solve_lexicographic_k(
             E_norm,
             idx_groups,
             labels,
@@ -368,6 +415,61 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             enforce_unique=True,
             required_count=required_count,
         )
+
+        # sort BEST selection by emission peak wavelength
+        labels_sel_tmp = [labels[j] for j in sel_idx]
+        order, _ = sorted_order_by_peak(labels_sel_tmp)
+        sel_idx = [sel_idx[i] for i in order]
+
+        # ---------- worst group (same size) ----------
+        worst_idx = select_worst_group(E_norm, labels, idx_groups, required_count, use_pool)
+        # sort WORST selection by emission peak wavelength
+        labels_worst_tmp = [labels[j] for j in worst_idx]
+        order_w, _ = sorted_order_by_peak(labels_worst_tmp)
+        worst_idx = [worst_idx[i] for i in order_w]
+
+        colors = ensure_colors(len(sel_idx))
+
+        # Selected fluorophores table (BEST)
+        if use_pool:
+            fluors = [labels[j].split(" – ", 1)[1] for j in sel_idx]
+            st.subheader("Selected fluorophores (best)")
+            html_two_row_table(
+                "Slot",
+                "Fluorophore",
+                [f"Slot {i+1}" for i in range(len(fluors))],
+                fluors,
+            )
+
+            # Worst group (same count)
+            worst_fluors = [labels[j].split(" – ", 1)[1] for j in worst_idx]
+            st.markdown("**Worst fluorophores (same count)**")
+            html_two_row_table(
+                "Slot",
+                "Fluorophore",
+                [f"Slot {i+1}" for i in range(len(worst_fluors))],
+                worst_fluors,
+            )
+
+        else:
+            sel_pairs = [labels[j] for j in sel_idx]
+            st.subheader("Selected fluorophores (best)")
+            html_two_row_table(
+                "Probe",
+                "Fluorophore",
+                [s.split(" – ", 1)[0] for s in sel_pairs],
+                [s.split(" – ", 1)[1] for s in sel_pairs],
+            )
+
+            worst_pairs = [labels[j] for j in worst_idx]
+            st.markdown("**Worst fluorophores (same count)**")
+            html_two_row_table(
+                "Probe",
+                "Fluorophore",
+                [s.split(" – ", 1)[0] for s in worst_pairs],
+                [s.split(" – ", 1)[1] for s in worst_pairs],
+            )
+
 
         # sort selection by emission peak wavelength
         labels_sel_tmp = [labels[j] for j in sel_idx]
@@ -510,24 +612,17 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             wl, dye_db, groups, laser_list, laser_strategy, powers_A
         )
 
-        # For selection + similarity: choose resolution
+                # For selection + similarity: choose resolution
         if (
             spec_res_mode == "33 detection channels (Valm lab)"
             and laser_strategy == "Simultaneous"
         ):
-            # Compress 1 nm spectra to 33 detection channels
-            E_raw_all_33 = cached_interpolate_E_on_channels(
-                wl, E_raw_all, DETECTION_CHANNELS
-            )
-            E_raw_all_33 = apply_mbs_zeroing(
-                E_raw_all_33, laser_strategy, spec_res_mode, laser_list
-            )
-            denom_all = np.linalg.norm(E_raw_all_33, axis=0, keepdims=True) + 1e-12
+            ...
             E_norm_for_select = E_raw_all_33 / denom_all
         else:
             E_norm_for_select = E_norm_all
 
-        # Lexicographic selection
+        # BEST group (lexicographic minimization)
         sel_idx, _ = solve_lexicographic_k(
             E_norm_for_select,
             idx_all,
@@ -537,6 +632,17 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             required_count=required_count,
         )
         final_labels = [labels_all[j] for j in sel_idx]
+
+        # WORST group (same size, greedy heuristic)
+        worst_idx = select_worst_group(
+            E_norm_for_select,
+            labels_all,
+            idx_all,
+            required_count,
+            use_pool,
+        )
+        worst_labels = [labels_all[j] for j in worst_idx]
+
 
         # (2) recalibrate on final set
         if laser_strategy == "Simultaneous":
@@ -589,8 +695,8 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
 
         colors = ensure_colors(len(labels_sel))
 
-        # Selected fluorophores table
-        st.subheader("Selected fluorophores (with lasers)")
+        # Selected fluorophores table (BEST)
+        st.subheader("Selected fluorophores (with lasers, best)")
         fluors = [s.split(" – ", 1)[1] for s in labels_sel]
         html_two_row_table(
             "Slot",
@@ -598,6 +704,20 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             [f"Slot {i+1}" for i in range(len(fluors))],
             fluors,
         )
+
+        # Worst group (same count), only作为一个对照列表，不做 simulation
+        if worst_labels:
+            # 按峰值波长排序一下 worst_labels
+            order_w, worst_labels = sorted_order_by_peak(worst_labels)
+            worst_fluors = [s.split(" – ", 1)[1] for s in worst_labels]
+            st.markdown("**Worst fluorophores (same count)**")
+            html_two_row_table(
+                "Slot",
+                "Fluorophore",
+                [f"Slot {i+1}" for i in range(len(worst_fluors))],
+                worst_fluors,
+            )
+
 
         # Pairwise similarity
         S = cosine_similarity_matrix(E_norm_sel)
