@@ -407,7 +407,7 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             st.error("No spectra.")
             st.stop()
 
-                sel_idx, _ = solve_lexicographic_k(
+        sel_idx, _ = solve_lexicographic_k(
             E_norm,
             idx_groups,
             labels,
