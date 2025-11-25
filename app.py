@@ -612,15 +612,24 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             wl, dye_db, groups, laser_list, laser_strategy, powers_A
         )
 
-                # For selection + similarity: choose resolution
+        # For selection + similarity: choose resolution
         if (
             spec_res_mode == "33 detection channels (Valm lab)"
             and laser_strategy == "Simultaneous"
         ):
-            ...
+            # Compress 1 nm spectra to 33 detection channels
+            E_raw_all_33 = cached_interpolate_E_on_channels(
+                wl, E_raw_all, DETECTION_CHANNELS
+            )
+            E_raw_all_33 = apply_mbs_zeroing(
+                E_raw_all_33, laser_strategy, spec_res_mode, laser_list
+            )
+            denom_all = np.linalg.norm(E_raw_all_33, axis=0, keepdims=True) + 1e-12
             E_norm_for_select = E_raw_all_33 / denom_all
         else:
+            # Fall back to 1 nm grid for selection
             E_norm_for_select = E_norm_all
+
 
         # BEST group (lexicographic minimization)
         sel_idx, _ = solve_lexicographic_k(
