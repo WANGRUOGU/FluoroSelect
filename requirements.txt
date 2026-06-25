@@ -6,3 +6,4 @@ ortools
 pyyaml
 pulp
 h5py
+google-genai
