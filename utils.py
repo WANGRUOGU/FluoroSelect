@@ -538,33 +538,70 @@ def _pick_integral_from_relaxed(x_vars, idx_groups):
     return sel
 
 
-def solve_minimax_layer(E_norm, idx_groups, labels_pair,
-                        enforce_unique=True, required_count: int | None = None):
+def solve_minimax_layer(
+    E_norm,
+    idx_groups,
+    labels_pair,
+    enforce_unique=True,
+    required_count: int | None = None,
+    fixed_indices=None,
+    allowed_indices=None,
+):
     """
     Minimize the maximum pairwise cosine among selected columns.
 
-    Two modes:
-      - required_count is None: "by probes" (pick exactly 1 per group, with global-unique dyes).
-      - required_count is int : "pool mode" (pick exactly N from the union set).
+    required_count is None:
+        By-probes mode, pick exactly one candidate per probe.
+
+    required_count is int:
+        Pool mode, pick exactly required_count columns.
+
+    fixed_indices:
+        Column indices that must be selected.
+
+    allowed_indices:
+        Column indices allowed for additional selection.
+        Fixed indices are allowed even if they are not in allowed_indices.
     """
     N = E_norm.shape[1]
     C = cosine_similarity_matrix(E_norm)
+
     prob = pulp.LpProblem("minimax", pulp.LpMinimize)
     x = [pulp.LpVariable(f"x_{j}", lowBound=0, upBound=1, cat="Binary") for j in range(N)]
     y = {}
+
     for i in range(N):
         for j in range(i + 1, N):
             y[(i, j)] = pulp.LpVariable(f"y_{i}_{j}", lowBound=0, upBound=1)
+
     t = pulp.LpVariable("t", lowBound=0)
+
+    fixed_indices = set(fixed_indices or [])
+    allowed_indices = set(allowed_indices) if allowed_indices is not None else set(range(N))
+    selectable_indices = allowed_indices | fixed_indices
+
+    for j in fixed_indices:
+        if 0 <= j < N:
+            prob += x[j] == 1, f"Fixed_{j}"
+
+    for j in range(N):
+        if j not in selectable_indices:
+            prob += x[j] == 0, f"NotAllowed_{j}"
 
     # selection constraints
     if required_count is None:
         for g, idxs in enumerate(idx_groups):
             prob += pulp.lpSum(x[j] for j in idxs) == 1, f"OnePerGroup_{g}"
+
         if enforce_unique:
             fluor_names = [s.split(" – ", 1)[1] for s in labels_pair]
             _unique_dye_constraints(prob, x, labels_pair, idx_groups, fluor_names)
     else:
+        if len(fixed_indices) > int(required_count):
+            raise ValueError(
+                f"Number of fixed fluorophores ({len(fixed_indices)}) "
+                f"cannot exceed required_count ({required_count})."
+            )
         prob += pulp.lpSum(x) == int(required_count), "PickN"
 
     # y linking + t >= C_ij * y_ij
@@ -575,6 +612,7 @@ def solve_minimax_layer(E_norm, idx_groups, labels_pair,
         prob += t >= float(C[i, j]) * yij
 
     prob += t
+
     _ = prob.solve(_SOLVER)
 
     if required_count is None:
@@ -582,6 +620,7 @@ def solve_minimax_layer(E_norm, idx_groups, labels_pair,
     else:
         xv = np.array([(v.value() or 0.0) for v in x])
         x_star = list(np.argsort(-xv)[:required_count])
+
     t_val = float(t.value() or 0.0)
     return x_star, t_val
 
