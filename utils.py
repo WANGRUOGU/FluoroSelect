@@ -2,6 +2,7 @@ import yaml
 import numpy as np
 import pulp
 
+
 # --- CBC solver: no time/gap limits (guarantee optimality), quiet log ---
 def _make_cbc_exact():
     try:
@@ -14,35 +15,40 @@ _SOLVER = _make_cbc_exact()
 
 
 # ====================== I/O ======================
-
 def load_dyes_yaml(path):
     """
     Load dyes.yaml -> (wavelengths, dye_db).
+
     dye_db[name] = {
         "emission": np.array(W,),
         "excitation": np.array(W,),
         "quantum_yield": float|None,
-        "extinction_coeff": float|None
+        "extinction_coeff": float|None,
     }
+
     Missing QY will be filled with the mean of available QYs.
     """
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
-    wl = np.array(data["wavelengths"], dtype=float)
 
+    wl = np.array(data["wavelengths"], dtype=float)
     dye_db = {}
+
     for name, rec in data["dyes"].items():
         em = np.array(rec.get("emission", []), dtype=float)
         ex = np.array(rec.get("excitation", []), dtype=float)
         qy = rec.get("quantum_yield", None)
         ec = rec.get("extinction_coeff", None)
         dye_db[name] = dict(
-            emission=em, excitation=ex, quantum_yield=qy, extinction_coeff=ec
+            emission=em,
+            excitation=ex,
+            quantum_yield=qy,
+            extinction_coeff=ec,
         )
 
-    qys = [v["quantum_yield"] for v in dye_db.values()
-           if v.get("quantum_yield") is not None]
+    qys = [v["quantum_yield"] for v in dye_db.values() if v.get("quantum_yield") is not None]
     mean_qy = float(np.mean(qys)) if len(qys) else 1.0
+
     for v in dye_db.values():
         if v.get("quantum_yield") is None:
             v["quantum_yield"] = mean_qy
@@ -53,8 +59,9 @@ def load_dyes_yaml(path):
 def load_probe_fluor_map(path):
     """
     Accepts:
-      - top-level list of {name: <probe>, fluors: [...]}
-      - or {probes: [...] } with same structure.
+    - top-level list of {name: , fluors: [...]}
+    - or {probes: [...] } with same structure.
+
     Returns dict[probe] -> list[fluor].
     """
     with open(path, "r", encoding="utf-8") as f:
@@ -78,11 +85,11 @@ def load_probe_fluor_map(path):
         if not isinstance(fls, (list, tuple)):
             fls = [str(fls).strip()] if str(fls).strip() else []
         mapping[name] = [str(x).strip() for x in fls if str(x).strip()]
+
     return mapping
 
 
 # =================== Linear-algebra helpers ===================
-
 def _safe_l2norm_cols(E):
     """L2-normalize each column with a numerical guard."""
     denom = np.linalg.norm(E, axis=0, keepdims=True) + 1e-12
@@ -92,7 +99,7 @@ def _safe_l2norm_cols(E):
 def cosine_similarity_matrix(E):
     """
     Cosine similarity among columns of E.
-    Diagonal is set to 0 so it's easy to take pairwise maxima.
+    Diagonal is set to 0 so it is easy to take pairwise maxima.
     """
     norms = np.linalg.norm(E, axis=0) + 1e-12
     G = (E.T @ E) / np.outer(norms, norms)
@@ -102,7 +109,7 @@ def cosine_similarity_matrix(E):
 
 def top_k_pairwise(S, labels_pair, k=10):
     """
-    Given NxN cosine matrix S (diag=0), return top-k pairs.
+    Given NxN cosine matrix S, return top-k pairs.
     Each item: (value, label_i, label_j), sorted descending by value.
     """
     N = S.shape[0]
@@ -110,6 +117,7 @@ def top_k_pairwise(S, labels_pair, k=10):
     vals = S[iu]
     if vals.size == 0:
         return []
+
     order = np.argsort(-vals)[: min(k, vals.size)]
     out = []
     for idx in order:
@@ -120,18 +128,19 @@ def top_k_pairwise(S, labels_pair, k=10):
 
 
 # =================== Spectra builders ===================
-
 def build_emission_only_matrix(wl, dye_db, groups):
     """
     Build peak-normalized emission-only matrix for optimization.
+
     Returns:
-      E_norm: W x N (L2-normalized by column)
-      labels_pair: list[str] "Probe – Fluor"
-      idx_groups: list[list[int]] column indices per probe group, in order.
+    - E_norm: W x N, L2-normalized by column
+    - labels_pair: list[str] "Probe – Fluor"
+    - idx_groups: list[list[int]], column indices per probe group
     """
     W = len(wl)
     cols, labels, idx_groups = [], [], []
     col_id = 0
+
     for probe, cand_list in groups.items():
         idxs = []
         for fluor in cand_list:
@@ -152,6 +161,7 @@ def build_emission_only_matrix(wl, dye_db, groups):
 
     if not cols:
         return np.zeros((W, 0)), [], []
+
     E = np.stack(cols, axis=1)
     E_norm = _safe_l2norm_cols(E)
     return E_norm, labels, idx_groups
@@ -178,7 +188,7 @@ def _segments_from_lasers(wl, lasers_sorted):
 
 
 def _interp_at(w, y, x):
-    """1D linear interpolation on a discrete grid (clamped)."""
+    """1D linear interpolation on a discrete grid, clamped."""
     if x <= w[0]:
         return float(y[0])
     if x >= w[-1]:
@@ -190,48 +200,13 @@ def _interp_at(w, y, x):
 
 def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
     """
-    Calibrate laser powers in Simultaneous mode, following this logic:
-
-    1. Sort laser wavelengths: lam[0] < lam[1] < ... and define segments
-       [lam[i], lam[i+1]) and the final [lam[-1], wl[-1]+1).
-
-    2. Use only selection_labels for calibration:
-       - For each dye, find the segment containing its global emission peak.
-       - A segment is "peak-active" if at least one dye's global peak lies inside it.
-
-    3. For segments that are not peak-active, set the power of the left-boundary laser to 0.
-
-    4. For the left-most peak-active segment s0:
-       - Set P[s0] = 1 for its left-boundary laser.
-       - For each dye j:
-            seg_peak_j = max emission inside segment s0
-            k_j        = excitation(lam[s0]) * QY * EC
-            value_j    = seg_peak_j * k_j
-         Define B = max_j value_j (global brightness cap).
-
-    5. For each subsequent peak-active segment s:
-       - For each dye j:
-            pre_j  = sum over all already-set lasers m < s
-                     of excitation(lam[m]) * QY * EC * P[m]
-            k_js   = excitation(lam[s]) * QY * EC
-            seg_peak_j = max emission inside segment s
-            We need: seg_peak_j * (pre_j + k_js * P[s]) <= B
-            Solve seg_peak_j * (pre_j + k_js * c) = B for c:
-                c_j = (B / seg_peak_j - pre_j) / k_js
-            Keep only c_j > 0 as valid upper bounds.
-         Set P[s] = min_j c_j over all valid positive c_j, or 0 if none.
-
-    Returns:
-        powers_sorted_by_wavelength: list of len(lam) aligned with sorted lam
-        B: brightness cap determined by the first peak-active segment.
+    Calibrate laser powers in Simultaneous mode.
     """
     lam = np.array(sorted(set(float(l) for l in laser_wavelengths)), dtype=float)
     W = len(wl)
-
     if lam.size == 0:
         return [0.0] * 0, 0.0
 
-    # Use only selected dyes for calibration
     fluor_names = [s.split(" – ", 1)[1] for s in selection_labels]
     recs = []
     for f in fluor_names:
@@ -250,17 +225,14 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
     segs = _segments_from_lasers(wl, lam)
 
     def seg_peak(rec, seg_index):
-        """Max emission of rec inside segment seg_index."""
         lo, hi = segs[seg_index]
         loi = _nearest_idx_from_grid(wl, lo)
         hii = _nearest_idx_from_grid(wl, hi - 1) + 1
         if loi >= hii:
             return 0.0
-        em = rec["emission"]
-        return float(np.max(em[loi:hii]))
+        return float(np.max(rec["emission"][loi:hii]))
 
     def coef_at(rec, l):
-        """excitation(l) * QY * EC using interpolation."""
         ex = rec["excitation"]
         qy = rec.get("quantum_yield", None)
         ec = rec.get("extinction_coeff", None)
@@ -269,7 +241,6 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
         ex_l = _interp_at(wl, ex, l)
         return float(ex_l * qy * (ec if ec is not None else 1.0))
 
-    # Mark segments that contain at least one global emission peak
     seg_has_peak = [False] * len(segs)
     for rec in recs:
         em = rec["emission"]
@@ -284,15 +255,12 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
 
     peak_segs = [s for s, u in enumerate(seg_has_peak) if u]
     P = np.zeros(len(lam), dtype=float)
-
     if not peak_segs:
         return P.tolist(), 0.0
 
-    # First peak-active segment
     s0 = peak_segs[0]
     P[s0] = 1.0
 
-    # Define brightness cap B based on segment s0
     B = 0.0
     for rec in recs:
         m0 = seg_peak(rec, s0)
@@ -306,49 +274,32 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
     if B <= 0.0:
         return P.tolist(), 0.0
 
-    # Subsequent peak-active segments
     for s in peak_segs[1:]:
         cand_c = []
         for rec in recs:
             m_seg = seg_peak(rec, s)
             if m_seg <= 0.0:
                 continue
-
-            # Contribution from previous lasers
             pre_j = 0.0
             for m_idx in range(s):
                 if P[m_idx] == 0.0:
                     continue
                 k_prev = coef_at(rec, lam[m_idx])
                 pre_j += k_prev * P[m_idx]
-
             k_js = coef_at(rec, lam[s])
             if k_js <= 0.0:
                 continue
-
             c_j = (B / m_seg - pre_j) / k_js
             if c_j > 0.0:
                 cand_c.append(c_j)
-
-        if cand_c:
-            P[s] = float(max(0.0, min(cand_c)))
-        else:
-            P[s] = 0.0
+        P[s] = float(max(0.0, min(cand_c))) if cand_c else 0.0
 
     return P.tolist(), float(B)
 
 
 def derive_powers_separate(wl, dye_db, selection_labels, laser_wavelengths):
     """
-    Separate-mode calibration:
-    - Use selected dyes.
-    - Let the smallest-wavelength laser have power = 1; define B as the maximum
-      reachable peak (emission * excitation * QY * EC) across dyes for that laser.
-    - For each other laser, scale so that its reachable peak equals B.
-
-    Returns:
-        powers_sorted: list of powers aligned with sorted laser_wavelengths
-        B: brightness cap.
+    Separate-mode calibration.
     """
     lam = np.array(sorted(laser_wavelengths), dtype=float)
     W = len(wl)
@@ -373,14 +324,14 @@ def derive_powers_separate(wl, dye_db, selection_labels, laser_wavelengths):
                 continue
             peaks.append(np.max(em) * coef(r, l))
         M.append(max(peaks) if peaks else 0.0)
-    M = np.array(M, dtype=float)
 
+    M = np.array(M, dtype=float)
     P = np.zeros_like(M)
     if M.size == 0:
         return [1.0] * 0, 1.0
+
     P[0] = 1.0
     B = float(M[0])
-
     for i in range(1, len(M)):
         P[i] = float(B / M[i]) if M[i] > 0 else 0.0
 
@@ -391,17 +342,11 @@ def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, pow
     """
     Build effective spectra for ALL candidates.
 
-    - Simultaneous: additive inside each laser's segment; within each segment,
-      the effective coefficient is the cumulative sum of excitation*QY*EC*P[m]
-      for all lasers m up to the segment index.
-    - Separate: build a block per laser (emission scaled by excitation*QY*EC*P[i])
-      and vertically concatenate the blocks per dye.
-
     Returns:
-      E_raw:  W x N  (Simultaneous)  OR  (W*L) x N (Separate)
-      E_norm: same shape, L2 normalized by column (for optimization)
-      labels_pair: list[str] "Probe – Fluor"
-      idx_groups: list[list[int]] for group constraints.
+    - E_raw
+    - E_norm
+    - labels_pair
+    - idx_groups
     """
     W = len(wl)
     lam = np.array(sorted(laser_wavelengths), dtype=float)
@@ -427,7 +372,6 @@ def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, pow
     col_id = 0
 
     if mode == "Separate":
-        # Separate mode: block-structured effective spectra (per laser)
         for probe, cand_list in groups.items():
             idxs = []
             for fluor in cand_list:
@@ -440,7 +384,6 @@ def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, pow
                 ec = rec["extinction_coeff"]
                 if em is None or ex is None or len(em) != W or len(ex) != W:
                     continue
-
                 per_laser_blocks = []
                 for i, l in enumerate(lam):
                     k = _interp_at(wl, ex, l) * qy * (ec if ec is not None else 1.0)
@@ -463,57 +406,53 @@ def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, pow
         E_norm = E_raw / denom
         return E_raw, E_norm, labels, idx_groups
 
-    else:
-        # Simultaneous mode: per-segment cumulative coefficient
-        segs = _segments_from_lasers_local(wl, lam)
-        for probe, cand_list in groups.items():
-            idxs = []
-            for fluor in cand_list:
-                rec = dye_db.get(fluor)
-                if rec is None:
+    # Simultaneous mode: per-segment cumulative coefficient
+    segs = _segments_from_lasers_local(wl, lam)
+    for probe, cand_list in groups.items():
+        idxs = []
+        for fluor in cand_list:
+            rec = dye_db.get(fluor)
+            if rec is None:
+                continue
+            em = rec["emission"]
+            ex = rec["excitation"]
+            qy = rec["quantum_yield"]
+            ec = rec["extinction_coeff"]
+            if em is None or ex is None or len(em) != W or len(ex) != W:
+                continue
+            eff = np.zeros(W, dtype=float)
+            for i, (lo, hi) in enumerate(segs):
+                loi = _nearest_idx_from_grid_local(wl, lo)
+                hii = _nearest_idx_from_grid_local(wl, hi - 1) + 1
+                if loi >= hii:
                     continue
-                em = rec["emission"]
-                ex = rec["excitation"]
-                qy = rec["quantum_yield"]
-                ec = rec["extinction_coeff"]
-                if em is None or ex is None or len(em) != W or len(ex) != W:
-                    continue
+                total_k = 0.0
+                for m in range(i + 1):
+                    ex_l = _interp_at(wl, ex, lam[m])
+                    total_k += ex_l * qy * (ec if ec is not None else 1.0) * pw[m]
+                eff[loi:hii] += em[loi:hii] * total_k
+            cols.append(eff)
+            labels.append(f"{probe} – {fluor}")
+            idxs.append(col_id)
+            col_id += 1
+        if idxs:
+            idx_groups.append(idxs)
 
-                eff = np.zeros(W, dtype=float)
-                for i, (lo, hi) in enumerate(segs):
-                    loi = _nearest_idx_from_grid_local(wl, lo)
-                    hii = _nearest_idx_from_grid_local(wl, hi - 1) + 1
-                    if loi >= hii:
-                        continue
-                    total_k = 0.0
-                    for m in range(i + 1):
-                        ex_l = _interp_at(wl, ex, lam[m])
-                        total_k += ex_l * qy * (ec if ec is not None else 1.0) * pw[m]
-                    eff[loi:hii] += em[loi:hii] * total_k
+    if not cols:
+        Z = np.zeros((W, 0))
+        return Z, Z, [], []
 
-                cols.append(eff)
-                labels.append(f"{probe} – {fluor}")
-                idxs.append(col_id)
-                col_id += 1
-            if idxs:
-                idx_groups.append(idxs)
-
-        if not cols:
-            Z = np.zeros((W, 0))
-            return Z, Z, [], []
-
-        E_raw = np.stack(cols, axis=1)
-        denom = np.linalg.norm(E_raw, axis=0, keepdims=True) + 1e-12
-        E_norm = E_raw / denom
-        return E_raw, E_norm, labels, idx_groups
+    E_raw = np.stack(cols, axis=1)
+    denom = np.linalg.norm(E_raw, axis=0, keepdims=True) + 1e-12
+    E_norm = E_raw / denom
+    return E_raw, E_norm, labels, idx_groups
 
 
 # =================== Global-unique constraint ===================
-
 def _unique_dye_constraints(prob, x_vars, labels_pair, groups, fluor_names):
     """
-    Enforce "each fluorophore can be used at most once globally".
-    Works for the 'by probe' mode; not applied in pool mode.
+    Enforce each fluorophore can be used at most once globally.
+    Works for by-probes mode; not applied in pool mode.
     """
     dye_to_cols = {}
     for j, d in enumerate(fluor_names):
@@ -522,12 +461,9 @@ def _unique_dye_constraints(prob, x_vars, labels_pair, groups, fluor_names):
         prob += pulp.lpSum(x_vars[j] for j in cols) <= 1, f"Unique_{d}"
 
 
-# =================== Optimization: lexicographic ===================
-
+# =================== Optimization helpers ===================
 def _pick_integral_from_relaxed(x_vars, idx_groups):
-    """
-    Safety: if a MIP solution leaves fractional x, pick argmax within each group.
-    """
+    """Safety: if a MIP solution leaves fractional x, pick argmax within each group."""
     xvals = np.array([(v.value() or 0.0) for v in x_vars], dtype=float)
     sel = []
     for idxs in idx_groups:
@@ -538,6 +474,38 @@ def _pick_integral_from_relaxed(x_vars, idx_groups):
     return sel
 
 
+def _normalize_fixed_allowed(N, fixed_indices=None, allowed_indices=None):
+    """
+    Convert fixed/allowed indices to validated sets.
+
+    fixed_indices: selected columns forced to 1.
+    allowed_indices: columns allowed for additional selection.
+    Fixed columns are allowed even if not included in allowed_indices.
+    """
+    fixed = {int(j) for j in (fixed_indices or []) if 0 <= int(j) < N}
+    allowed = (
+        {int(j) for j in allowed_indices if 0 <= int(j) < N}
+        if allowed_indices is not None
+        else set(range(N))
+    )
+    selectable = allowed | fixed
+    return fixed, allowed, selectable
+
+
+def _add_fixed_allowed_constraints(prob, x, N, fixed_indices=None, allowed_indices=None):
+    fixed, allowed, selectable = _normalize_fixed_allowed(N, fixed_indices, allowed_indices)
+
+    for j in fixed:
+        prob += x[j] == 1, f"Fixed_{j}"
+
+    for j in range(N):
+        if j not in selectable:
+            prob += x[j] == 0, f"NotAllowed_{j}"
+
+    return fixed, allowed, selectable
+
+
+# =================== Optimization: minimax layer ===================
 def solve_minimax_layer(
     E_norm,
     idx_groups,
@@ -550,21 +518,22 @@ def solve_minimax_layer(
     """
     Minimize the maximum pairwise cosine among selected columns.
 
-    required_count is None:
-        By-probes mode, pick exactly one candidate per probe.
+    Modes:
+    - required_count is None: by-probes mode, pick exactly one per group.
+    - required_count is int: pool mode, pick exactly required_count from the union set.
 
-    required_count is int:
-        Pool mode, pick exactly required_count columns.
-
-    fixed_indices:
-        Column indices that must be selected.
-
-    allowed_indices:
-        Column indices allowed for additional selection.
-        Fixed indices are allowed even if they are not in allowed_indices.
+    In pool mode, fixed_indices are forced into the final selection, and
+    allowed_indices restrict the additional candidates.
     """
     N = E_norm.shape[1]
     C = cosine_similarity_matrix(E_norm)
+
+    fixed, _, _ = _normalize_fixed_allowed(N, fixed_indices, allowed_indices)
+    if required_count is not None and len(fixed) > int(required_count):
+        raise ValueError(
+            f"Number of fixed fluorophores ({len(fixed)}) cannot exceed "
+            f"required_count ({required_count})."
+        )
 
     prob = pulp.LpProblem("minimax", pulp.LpMinimize)
     x = [pulp.LpVariable(f"x_{j}", lowBound=0, upBound=1, cat="Binary") for j in range(N)]
@@ -576,32 +545,16 @@ def solve_minimax_layer(
 
     t = pulp.LpVariable("t", lowBound=0)
 
-    fixed_indices = set(fixed_indices or [])
-    allowed_indices = set(allowed_indices) if allowed_indices is not None else set(range(N))
-    selectable_indices = allowed_indices | fixed_indices
-
-    for j in fixed_indices:
-        if 0 <= j < N:
-            prob += x[j] == 1, f"Fixed_{j}"
-
-    for j in range(N):
-        if j not in selectable_indices:
-            prob += x[j] == 0, f"NotAllowed_{j}"
+    _add_fixed_allowed_constraints(prob, x, N, fixed_indices, allowed_indices)
 
     # selection constraints
     if required_count is None:
         for g, idxs in enumerate(idx_groups):
             prob += pulp.lpSum(x[j] for j in idxs) == 1, f"OnePerGroup_{g}"
-
         if enforce_unique:
             fluor_names = [s.split(" – ", 1)[1] for s in labels_pair]
             _unique_dye_constraints(prob, x, labels_pair, idx_groups, fluor_names)
     else:
-        if len(fixed_indices) > int(required_count):
-            raise ValueError(
-                f"Number of fixed fluorophores ({len(fixed_indices)}) "
-                f"cannot exceed required_count ({required_count})."
-            )
         prob += pulp.lpSum(x) == int(required_count), "PickN"
 
     # y linking + t >= C_ij * y_ij
@@ -612,46 +565,62 @@ def solve_minimax_layer(
         prob += t >= float(C[i, j]) * yij
 
     prob += t
-
     _ = prob.solve(_SOLVER)
 
     if required_count is None:
         x_star = _pick_integral_from_relaxed(x, idx_groups)
     else:
         xv = np.array([(v.value() or 0.0) for v in x])
-        x_star = list(np.argsort(-xv)[:required_count])
+        x_star = [j for j in range(N) if xv[j] > 0.5]
+        if len(x_star) != int(required_count):
+            x_star = list(np.argsort(-xv)[: int(required_count)])
 
     t_val = float(t.value() or 0.0)
     return x_star, t_val
 
 
-def solve_lexicographic_k(E_norm, idx_groups, labels_pair, levels: int = 10,
-                          enforce_unique: bool = True,
-                          required_count: int | None = None):
+# =================== Optimization: lexicographic ===================
+def solve_lexicographic_k(
+    E_norm,
+    idx_groups,
+    labels_pair,
+    levels: int = 10,
+    enforce_unique: bool = True,
+    required_count: int | None = None,
+    fixed_indices=None,
+    allowed_indices=None,
+):
     """
-    True lexicographic minimization over pairwise cosines:
-      level-1: minimize the maximum pairwise cosine (t1)
-      level-2..K: at each level k, fix all previous levels to their optimal values
-                  (within a tiny epsilon) and minimize the next largest term using
-                  a standard lambda/mu linearization.
+    True lexicographic minimization over pairwise cosines.
 
     Modes:
-      - required_count=None: "by probes" (1 per group + global unique).
-      - required_count=int : "pool mode" (select N from the union set).
+    - required_count=None: by-probes mode, one per group plus global unique.
+    - required_count=int: pool mode, select N from the union set.
 
-    Returns (selected_indices, [t1*, lam2*, lam3*, ... up to K]).
+    Optional pool-mode constraints:
+    - fixed_indices: columns forced into the final selected set.
+    - allowed_indices: columns allowed as additional candidates.
     """
     N = E_norm.shape[1]
     if N == 0:
         return [], []
+
+    fixed, _, _ = _normalize_fixed_allowed(N, fixed_indices, allowed_indices)
+    if required_count is not None and len(fixed) > int(required_count):
+        raise ValueError(
+            f"Number of fixed fluorophores ({len(fixed)}) cannot exceed "
+            f"required_count ({required_count})."
+        )
+
     C = cosine_similarity_matrix(E_norm)
     pairs = [(i, j) for i in range(N) for j in range(i + 1, N)]
     P = len(pairs)
+
     if P == 0:
         if required_count is None:
             sel = [g[0] for g in idx_groups if g]
         else:
-            sel = list(range(min(required_count, N)))
+            sel = list(range(min(int(required_count), N)))
         return sel, []
 
     K = int(max(1, min(levels, P)))
@@ -663,13 +632,14 @@ def solve_lexicographic_k(E_norm, idx_groups, labels_pair, levels: int = 10,
 
     for k in range(1, K + 1):
         prob = pulp.LpProblem(f"lexi_k{k}", pulp.LpMinimize)
+        x = [pulp.LpVariable(f"x_{j}", lowBound=0, upBound=1, cat="Binary") for j in range(N)]
+        y = {
+            (i, j): pulp.LpVariable(f"y_{i}_{j}", lowBound=0, upBound=1)
+            for (i, j) in pairs
+        }
+        z = {(i, j): pulp.LpVariable(f"z_{i}_{j}", lowBound=0) for (i, j) in pairs}
 
-        x = [pulp.LpVariable(f"x_{j}", lowBound=0, upBound=1, cat="Binary")
-             for j in range(N)]
-        y = {(i, j): pulp.LpVariable(f"y_{i}_{j}", lowBound=0, upBound=1)
-             for (i, j) in pairs}
-        z = {(i, j): pulp.LpVariable(f"z_{i}_{j}", lowBound=0)
-             for (i, j) in pairs}
+        _add_fixed_allowed_constraints(prob, x, N, fixed_indices, allowed_indices)
 
         # selection constraints
         if required_count is None:
@@ -687,6 +657,7 @@ def solve_lexicographic_k(E_norm, idx_groups, labels_pair, levels: int = 10,
             prob += yij <= x[i]
             prob += yij <= x[j]
             prob += yij >= x[i] + x[j] - 1
+
             cij = float(C[i, j])
             zij = z[(i, j)]
             prob += zij <= cij * yij
@@ -696,7 +667,7 @@ def solve_lexicographic_k(E_norm, idx_groups, labels_pair, levels: int = 10,
         t1 = pulp.LpVariable("t1", lowBound=0)
         for (i, j) in pairs:
             prob += t1 >= z[(i, j)]
-        if 0 < len(best_layers):
+        if len(best_layers) > 0:
             prob += t1 <= float(best_layers[0]) + eps
 
         # levels 2..k
@@ -713,22 +684,23 @@ def solve_lexicographic_k(E_norm, idx_groups, labels_pair, levels: int = 10,
                 if (r - 1) < len(best_layers):
                     prob += lam[r] <= float(best_layers[r - 1]) + eps
 
-        # objective (current level only)
+        # objective: current level only
         if k == 1:
             prob += t1
         else:
             prob += lam[k] + (1.0 / max(1, P)) * pulp.lpSum(mu[k][p] for p in pairs)
 
         _ = prob.solve(_SOLVER)
-
         best_layers.append(float((t1 if k == 1 else lam[k]).value() or 0.0))
 
-        # read current x (robust integralization)
+        # read current x
         if required_count is None:
             x_star_last = _pick_integral_from_relaxed(x, single_group)
         else:
             xv = np.array([(v.value() or 0.0) for v in x])
-            x_star_last = list(np.argsort(-xv)[:required_count])
+            x_star_last = [j for j in range(N) if xv[j] > 0.5]
+            if len(x_star_last) != int(required_count):
+                x_star_last = list(np.argsort(-xv)[: int(required_count)])
 
         if best_layers[-1] <= 1e-8:
             break

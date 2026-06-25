@@ -33,8 +33,11 @@ from ui_helpers import (
 )
 from metrics import compute_prop_and_accuracy
 
+
 st.set_page_config(page_title="Fluorophore Selection", layout="wide")
 st.title("Fluorophore Selection for Multiplexed Imaging")
+
+
 # -------------------- Data --------------------
 wl, dye_db = load_dyes_yaml(DYES_YAML)
 probe_map = load_probe_fluor_map(PROBE_MAP_YAML)
@@ -77,7 +80,7 @@ inventory_pool = _get_inventory_from_probe_map()
 
 
 def _get_eub338_pool():
-    """Candidates under the EUB 338 probe key (various spellings), filtered to dyes.yaml presence."""
+    """Candidates under the EUB 338 probe key, filtered to dyes.yaml presence."""
     targets = {"eub338", "eub 338", "eub-338"}
 
     def norm(s):
@@ -87,6 +90,7 @@ def _get_eub338_pool():
         if norm(k) in targets:
             cands = [f for f in probe_map.get(k, []) if f in dye_db]
             return sorted({c.strip() for c in cands})
+
     # relaxed fallback
     import re
 
@@ -97,6 +101,7 @@ def _get_eub338_pool():
         if norm2(k) == "eub338":
             cands = [f for f in probe_map.get(k, []) if f in dye_db]
             return sorted({c.strip() for c in cands})
+
     return []
 
 
@@ -120,38 +125,42 @@ def peak_wavelength_for_label(label: str) -> float:
 def sorted_order_by_peak(labels_list):
     """
     Given a list of labels, return:
-      - order: np.array of indices that sorts them by emission peak wavelength
-      - sorted_labels: labels_list reordered by that order
+    - order: np.array of indices that sorts them by emission peak wavelength
+    - sorted_labels: labels_list reordered by that order
     """
     peaks = [peak_wavelength_for_label(lbl) for lbl in labels_list]
     order = np.argsort(peaks)
     sorted_labels = [labels_list[i] for i in order]
     return order, sorted_labels
 
+
+def fluor_from_label(label: str) -> str:
+    """Extract fluorophore name from 'Probe – Fluor' or return label itself."""
+    return label.split(" – ", 1)[1] if " – " in label else label
+
+
 def select_worst_group(E_norm, labels, idx_groups, required_count, use_pool):
     """
-    Heuristic 'worst group' selector:
-    - Compute cosine similarity for all candidates.
-    - For each column, use its maximum similarity to any other column as a score.
-    - Pool mode: pick the required_count columns with largest scores.
-    - By-probes mode: for each probe group, pick the candidate with the largest score,
-      enforcing global fluorophore uniqueness as much as possible.
+    Heuristic 'worst group' selector.
+
+    Pool mode:
+        Pick required_count columns with largest max similarity.
+    By-probes mode:
+        For each probe group, pick the candidate with largest max similarity,
+        enforcing global fluorophore uniqueness as much as possible.
     """
     if E_norm.size == 0:
         return []
 
     S = cosine_similarity_matrix(E_norm)
-    # S[i, i] 已经在 cosine_similarity_matrix 里被设为 0 了
-    max_sim = np.max(S, axis=1)  # 每个 candidate 与其它 candidate 的最大相似度
+    max_sim = np.max(S, axis=1)
 
     if use_pool:
-        # 单 pool：直接按 max_sim 从大到小取
         if required_count is None:
-            required_count = len(E_norm.shape[1])
-        order = np.argsort(-max_sim)  # descending
-        return [int(i) for i in order[: required_count]]
+            required_count = E_norm.shape[1]
+        order = np.argsort(-max_sim)
+        return [int(i) for i in order[: int(required_count)]]
 
-    # By-probes：每个 probe 选一个“最相似”的 fluorophore，同时尽量保持全局 unique
     worst = []
     used_dyes = set()
     for idxs in idx_groups:
@@ -159,22 +168,62 @@ def select_worst_group(E_norm, labels, idx_groups, required_count, use_pool):
             continue
         best_j = None
         best_score = -1.0
-        # 先在未使用的染料中找分数最高的
+
         for j in idxs:
-            dye = labels[j].split(" – ", 1)[1]
+            dye = fluor_from_label(labels[j])
             if dye in used_dyes:
                 continue
             score = max_sim[j]
             if score > best_score:
                 best_score = score
                 best_j = j
-        # 如果这个 group 里所有候选都已经被用过了，就允许重复，用分数最高的
+
         if best_j is None:
             best_j = max(idxs, key=lambda j: max_sim[j])
+
         worst.append(int(best_j))
-        used_dyes.add(labels[best_j].split(" – ", 1)[1])
+        used_dyes.add(fluor_from_label(labels[best_j]))
 
     return worst
+
+
+def select_worst_group_constrained(
+    E_norm,
+    labels,
+    idx_groups,
+    required_count,
+    use_pool,
+    fixed_fluorophores=None,
+    allowed_fluorophores=None,
+):
+    """
+    Worst-group heuristic that mirrors the manual constraints in pool mode.
+    This is only a contrast list, not the optimizer.
+    """
+    if not use_pool:
+        return select_worst_group(E_norm, labels, idx_groups, required_count, use_pool)
+
+    fixed_set = set(fixed_fluorophores or [])
+    allowed_set = set(allowed_fluorophores or [])
+
+    fixed_idx = [j for j, lab in enumerate(labels) if fluor_from_label(lab) in fixed_set]
+    allowed_idx = [j for j, lab in enumerate(labels) if fluor_from_label(lab) in allowed_set]
+    allowed_idx = [j for j in allowed_idx if j not in fixed_idx]
+
+    n_total = int(required_count or 0)
+    n_add = max(0, n_total - len(fixed_idx))
+
+    if n_add == 0:
+        return fixed_idx[:n_total]
+
+    if E_norm.size == 0:
+        return fixed_idx[:n_total]
+
+    S = cosine_similarity_matrix(E_norm)
+    max_sim = np.max(S, axis=1)
+    order = sorted(allowed_idx, key=lambda j: -max_sim[j])
+    return fixed_idx + order[:n_add]
+
 
 @st.cache_data(show_spinner=False)
 def cached_build_effective_with_lasers(wl, dye_db, groups, laser_list, laser_strategy, powers):
@@ -204,8 +253,7 @@ def cached_interpolate_E_on_channels(wl, spectra_cols, chan_centers_nm):
 def apply_mbs_zeroing(E_raw_on_det, laser_strategy, spec_res_mode, laser_list):
     """
     In Simultaneous + Valm-lab 33-channel mode, if lasers are [405,488,561,639],
-    zero out MBS-blocked detection channels:
-      414, 486, 557, 566, 628, 637, 646 nm.
+    zero out MBS-blocked detection channels: 414, 486, 557, 566, 628, 637, 646 nm.
     """
     if spec_res_mode != "33 detection channels (Valm lab)":
         return E_raw_on_det
@@ -223,17 +271,17 @@ def apply_mbs_zeroing(E_raw_on_det, laser_strategy, spec_res_mode, laser_list):
         E_raw_on_det[mask, :] = 0.0
     return E_raw_on_det
 
+
 def render_metrics_table(names, rmse_vals, prop_vals, acc_vals):
     """
     Render a 3 x N metrics table:
-      - rows: RMSE, Proportion, Accuracy
-      - columns: fluorophore names
+    - rows: RMSE, Proportion, Accuracy
+    - columns: fluorophore names
     """
-    # helper for escaping HTML
+
     def esc(x):
         return str(x).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    # format numeric values; keep empty for NaN/inf
     def fmt(v):
         try:
             v = float(v)
@@ -244,45 +292,33 @@ def render_metrics_table(names, rmse_vals, prop_vals, acc_vals):
         return f"{v:.4f}"
 
     headers = ["Measurement"] + [esc(n) for n in names]
-
     rows = [
-        ["RMSE"]       + [fmt(v) for v in rmse_vals],
+        ["RMSE"] + [fmt(v) for v in rmse_vals],
         ["Proportion"] + [fmt(v) for v in prop_vals],
-        ["Accuracy"]   + [fmt(v) for v in acc_vals],
+        ["Accuracy"] + [fmt(v) for v in acc_vals],
     ]
 
-    # build thead
-    thead = "".join(
-        f"<th style='padding:6px 10px;border:1px solid #ddd;text-align:left'>{h}</th>"
-        for h in headers
-    )
-
-    # build tbody
+    thead = "".join(f"<th>{h}</th>" for h in headers)
     trs = []
     for r in rows:
         tds = []
         for j, cell in enumerate(r):
             align = "left" if j == 0 else "right"
-            tds.append(
-                f"<td style='padding:6px 10px;border:1px solid #ddd;text-align:{align}'>{cell}</td>"
-            )
+            tds.append(f'<td style="text-align:{align}; padding:4px 8px;">{cell}</td>')
         trs.append(f"<tr>{''.join(tds)}</tr>")
 
     html = f"""
-    <div style="overflow-x:auto;">
-      <table style="border-collapse:collapse;width:100%;table-layout:auto;">
+    <table style="border-collapse:collapse; font-size:0.9rem;">
         <thead><tr>{thead}</tr></thead>
         <tbody>{''.join(trs)}</tbody>
-      </table>
-    </div>
+    </table>
     """
-
     st.markdown(html, unsafe_allow_html=True)
+
 
 # -------------------- Sidebar --------------------
 st.sidebar.header("Configuration")
 
-# 1. 选择模式
 mode = st.sidebar.radio(
     "Mode",
     options=("Emission spectra", "Predicted spectra"),
@@ -297,7 +333,6 @@ laser_list = []
 laser_strategy = None
 spec_res_mode = "1 nm (general)"
 
-# 2. 在 Predicted 模式下，先选 laser 使用方式 + 光谱分辨率
 if mode == "Predicted spectra":
     laser_strategy = st.sidebar.radio(
         "Laser usage",
@@ -305,7 +340,6 @@ if mode == "Predicted spectra":
         key="laser_strategy_radio",
     )
 
-    # ✅ Spectral resolution 提到 Selection source 之前
     if laser_strategy == "Simultaneous":
         spec_res_mode = st.sidebar.radio(
             "Spectral resolution",
@@ -315,35 +349,34 @@ if mode == "Predicted spectra":
     else:
         spec_res_mode = "1 nm (general)"
 
-# 3. 再选 Selection source
 source_mode = st.sidebar.radio(
     "Selection source",
     ("By probes", "From readout pool", "All fluorophores", "EUB338 only"),
     key="source_radio",
 )
 
-# 4. 其他 sidebar 控件
 k_show = st.sidebar.slider("Show top-K similarities", 5, 50, 10, 1, key="k_show_slider")
 
-# 5. 在 Predicted 模式下继续设置 laser 波长
 if mode == "Predicted spectra":
     n = st.sidebar.number_input("Number of lasers", 1, 8, 4, 1, key="num_lasers_input")
     cols_l = st.sidebar.columns(2)
     defaults = [405, 488, 561, 639]
     for i in range(n):
         lam = cols_l[i % 2].number_input(
-            f"Laser {i+1} (nm)",
+            f"Laser {i + 1} (nm)",
             int(wl.min()),
             int(max(700, wl.max())),
             defaults[i] if i < len(defaults) else int(wl.min()),
             1,
-            key=f"laser_{i+1}",
+            key=f"laser_{i + 1}",
         )
         laser_list.append(int(lam))
 
 
 # -------------------- Source selection -> groups --------------------
 use_pool = False
+pool = []
+
 if source_mode == "From readout pool":
     pool = readout_pool[:]
     if not pool:
@@ -351,7 +384,12 @@ if source_mode == "From readout pool":
         st.stop()
     max_n = len(pool)
     N_pick = st.number_input(
-        "How many fluorophores", 1, max_n, min(4, max_n), 1, key="n_pick_pool"
+        "How many fluorophores",
+        1,
+        max_n,
+        min(4, max_n),
+        1,
+        key="n_pick_pool",
     )
     groups = {"Pool": pool}
     use_pool = True
@@ -363,7 +401,12 @@ elif source_mode == "All fluorophores":
         st.stop()
     max_n = len(pool)
     N_pick = st.number_input(
-        "How many fluorophores", 1, max_n, min(4, max_n), 1, key="n_pick_inv"
+        "How many fluorophores",
+        1,
+        max_n,
+        min(4, max_n),
+        1,
+        key="n_pick_inv",
     )
     groups = {"Pool": pool}
     use_pool = True
@@ -375,30 +418,135 @@ elif source_mode == "EUB338 only":
         st.stop()
     max_n = len(pool)
     N_pick = st.number_input(
-        "How many fluorophores", 1, max_n, min(4, max_n), 1, key="n_pick_eub338"
+        "How many fluorophores",
+        1,
+        max_n,
+        min(4, max_n),
+        1,
+        key="n_pick_eub338",
     )
     groups = {"Pool": pool}
     use_pool = True
 
-else:  # "By probes"
+else:
     all_probes = sorted(probe_map.keys())
     picked = st.multiselect("Probes", options=all_probes, key="picked_probes")
     if not picked:
         st.info("Select at least one probe to proceed.")
         st.stop()
+
     groups = {}
     for p in picked:
         cands = [f for f in probe_map.get(p, []) if f in dye_db]
         if cands:
             groups[p] = cands
+
     if not groups:
         st.error("No valid candidates with spectra in dyes.yaml.")
         st.stop()
+
     N_pick = None
 
 
+# -------------------- Manual constraints for pool modes --------------------
+fixed_fluorophores = []
+allowed_fluorophores = None
+required_count = N_pick if use_pool else None
+
+if use_pool:
+    st.sidebar.subheader("Manual constraints")
+
+    use_manual_constraints = st.sidebar.checkbox(
+        "Use fixed/allowed fluorophores",
+        value=False,
+        key="use_manual_constraints",
+        help="Force some fluorophores into the panel and restrict the candidates for the remaining slots.",
+    )
+
+    if use_manual_constraints:
+        all_available_fluors = sorted(set(pool))
+
+        fixed_fluorophores = st.sidebar.multiselect(
+            "Fixed fluorophores",
+            options=all_available_fluors,
+            default=[],
+            help=(
+                "These fluorophores will be forced into the final selected panel. "
+                "The optimizer will select the remaining fluorophores around them."
+            ),
+            key="fixed_fluorophores",
+        )
+
+        candidate_options = [f for f in all_available_fluors if f not in fixed_fluorophores]
+
+        allowed_fluorophores = st.sidebar.multiselect(
+            "Allowed candidates for additional selection",
+            options=candidate_options,
+            default=candidate_options,
+            help=(
+                "The optimizer can only choose additional fluorophores from this list. "
+                "Fixed fluorophores are always included."
+            ),
+            key="allowed_fluorophores",
+        )
+
+        default_additional = min(
+            max(0, int(N_pick) - len(fixed_fluorophores)),
+            len(allowed_fluorophores),
+        )
+        n_additional = st.sidebar.number_input(
+            "How many additional fluorophores",
+            min_value=0,
+            max_value=len(allowed_fluorophores),
+            value=default_additional,
+            step=1,
+            key="n_additional_fluors",
+        )
+
+        required_count = len(fixed_fluorophores) + int(n_additional)
+
+        if required_count == 0:
+            st.info("Select at least one fixed fluorophore or choose at least one additional fluorophore.")
+            st.stop()
+
+        constrained_pool = sorted(set(fixed_fluorophores) | set(allowed_fluorophores))
+        if not constrained_pool:
+            st.error("No fluorophores are available after applying manual constraints.")
+            st.stop()
+
+        groups = {"Pool": constrained_pool}
+
+        st.sidebar.caption(
+            f"Final panel size = {len(fixed_fluorophores)} fixed + {int(n_additional)} additional = {required_count}."
+        )
+    else:
+        fixed_fluorophores = []
+        allowed_fluorophores = sorted(set(pool))
+        required_count = N_pick
+
+
+# -------------------- Core runner --------------------
 def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
-    required_count = N_pick if use_pool else None
+    required_count_local = required_count if use_pool else None
+
+    def get_constraint_indices(labels):
+        if not use_pool:
+            return None, None
+
+        fixed_set = set(fixed_fluorophores or [])
+        allowed_set = set(allowed_fluorophores or [])
+
+        fixed_indices = []
+        allowed_indices = []
+
+        for j, lab in enumerate(labels):
+            fluor = fluor_from_label(lab)
+            if fluor in fixed_set:
+                fixed_indices.append(j)
+            if fluor in allowed_set:
+                allowed_indices.append(j)
+
+        return fixed_indices, allowed_indices
 
     # ---------- EMISSION MODE ----------
     if mode == "Emission spectra":
@@ -407,50 +555,59 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             st.error("No spectra.")
             st.stop()
 
-        sel_idx, _ = solve_lexicographic_k(
-            E_norm,
-            idx_groups,
-            labels,
-            levels=10,
-            enforce_unique=True,
-            required_count=required_count,
-        )
+        fixed_indices, allowed_indices = get_constraint_indices(labels)
+        try:
+            sel_idx, _ = solve_lexicographic_k(
+                E_norm,
+                idx_groups,
+                labels,
+                levels=10,
+                enforce_unique=True,
+                required_count=required_count_local,
+                fixed_indices=fixed_indices,
+                allowed_indices=allowed_indices,
+            )
+        except ValueError as e:
+            st.error(str(e))
+            st.stop()
 
-        # sort BEST selection by emission peak wavelength
         labels_sel_tmp = [labels[j] for j in sel_idx]
         order, _ = sorted_order_by_peak(labels_sel_tmp)
         sel_idx = [sel_idx[i] for i in order]
 
-        # ---------- worst group (same size) ----------
-        worst_idx = select_worst_group(E_norm, labels, idx_groups, required_count, use_pool)
-        # sort WORST selection by emission peak wavelength
+        worst_idx = select_worst_group_constrained(
+            E_norm,
+            labels,
+            idx_groups,
+            required_count_local,
+            use_pool,
+            fixed_fluorophores=fixed_fluorophores,
+            allowed_fluorophores=allowed_fluorophores,
+        )
         labels_worst_tmp = [labels[j] for j in worst_idx]
         order_w, _ = sorted_order_by_peak(labels_worst_tmp)
         worst_idx = [worst_idx[i] for i in order_w]
 
         colors = ensure_colors(len(sel_idx))
 
-        # Selected fluorophores table (BEST)
         if use_pool:
-            fluors = [labels[j].split(" – ", 1)[1] for j in sel_idx]
+            fluors = [fluor_from_label(labels[j]) for j in sel_idx]
             st.subheader("Selected fluorophores (best)")
             html_two_row_table(
                 "Slot",
                 "Fluorophore",
-                [f"Slot {i+1}" for i in range(len(fluors))],
+                [f"Slot {i + 1}" for i in range(len(fluors))],
                 fluors,
             )
 
-            # Worst group (same count)
-            worst_fluors = [labels[j].split(" – ", 1)[1] for j in worst_idx]
+            worst_fluors = [fluor_from_label(labels[j]) for j in worst_idx]
             st.markdown("**Worst fluorophores (same count)**")
             html_two_row_table(
                 "Slot",
                 "Fluorophore",
-                [f"Slot {i+1}" for i in range(len(worst_fluors))],
+                [f"Slot {i + 1}" for i in range(len(worst_fluors))],
                 worst_fluors,
             )
-
         else:
             sel_pairs = [labels[j] for j in sel_idx]
             st.subheader("Selected fluorophores (best)")
@@ -470,34 +627,6 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
                 [s.split(" – ", 1)[1] for s in worst_pairs],
             )
 
-
-        # sort selection by emission peak wavelength
-        labels_sel_tmp = [labels[j] for j in sel_idx]
-        order, _ = sorted_order_by_peak(labels_sel_tmp)
-        sel_idx = [sel_idx[i] for i in order]
-
-        colors = ensure_colors(len(sel_idx))
-
-        # Selected fluorophores table
-        if use_pool:
-            fluors = [labels[j].split(" – ", 1)[1] for j in sel_idx]
-            st.subheader("Selected fluorophores")
-            html_two_row_table(
-                "Slot",
-                "Fluorophore",
-                [f"Slot {i+1}" for i in range(len(fluors))],
-                fluors,
-            )
-        else:
-            sel_pairs = [labels[j] for j in sel_idx]
-            st.subheader("Selected fluorophores")
-            html_two_row_table(
-                "Probe",
-                "Fluorophore",
-                [s.split(" – ", 1)[0] for s in sel_pairs],
-                [s.split(" – ", 1)[1] for s in sel_pairs],
-            )
-
         # Pairwise similarity
         S = cosine_similarity_matrix(E_norm[:, sel_idx])
         tops = top_k_pairwise(S, [labels[j] for j in sel_idx], k=k_show)
@@ -512,7 +641,7 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             fmt2=True,
         )
 
-        # Spectra viewer (emission-only, wavelength grid)
+        # Spectra viewer
         st.subheader("Spectra viewer")
         fig = go.Figure()
         for t, j in enumerate(sel_idx):
@@ -542,6 +671,7 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
         colL, colR = st.columns(2)
         true_rgb = (colorize_composite(Atrue, colors) * 255).astype(np.uint8)
         labelmap_rgb = argmax_labelmap(Ahat, colors)
+
         with colL:
             st.image(true_rgb, use_container_width=True, clamp=True)
             st.caption("True")
@@ -551,21 +681,14 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
 
         names = [prettify_name(labels[j]) for j in sel_idx]
         unmix_bw = [to_uint8_gray(Ahat[:, :, r]) for r in range(Ahat.shape[2])]
-
         st.divider()
         show_bw_grid("Per-fluorophore (Unmixing, grayscale)", unmix_bw, names, cols_per_row=6)
 
-         # proportion & accuracy
         prop_vals, acc_vals = compute_prop_and_accuracy(Atrue, Ahat)
-
-        # RMSE
         rmse_vals = []
         for r in range(len(names)):
-            rmse_vals.append(
-                np.sqrt(np.mean((Ahat[:, :, r] - Atrue[:, :, r]) ** 2))
-            )
+            rmse_vals.append(np.sqrt(np.mean((Ahat[:, :, r] - Atrue[:, :, r]) ** 2)))
 
-        # one combined metrics table
         metric_header(
             "Per-fluorophore metrics",
             "RMSE: Root-mean-square error of the estimated abundance map for each fluorophore. "
@@ -575,248 +698,230 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             "accuracy is the fraction of pixels where this fluorophore has the largest estimated abundance.",
         )
         render_metrics_table(names, rmse_vals, prop_vals, acc_vals)
-
-
         return
 
     # ---------- PREDICTED MODE ----------
-    else:
-        if not laser_list:
-            st.error("Please specify laser wavelengths.")
-            st.stop()
+    if not laser_list:
+        st.error("Please specify laser wavelengths.")
+        st.stop()
 
-        # Round A: provisional selection on emission-only
-        E0, labels0, idx0 = build_emission_only_matrix(wl, dye_db, groups)
+    # Round A: provisional selection on emission-only spectra
+    E0, labels0, idx0 = build_emission_only_matrix(wl, dye_db, groups)
+    fixed_indices0, allowed_indices0 = get_constraint_indices(labels0)
+    try:
         sel0, _ = solve_lexicographic_k(
             E0,
             idx0,
             labels0,
             levels=10,
             enforce_unique=True,
-            required_count=required_count,
+            required_count=required_count_local,
+            fixed_indices=fixed_indices0,
+            allowed_indices=allowed_indices0,
         )
-        A_labels = [labels0[j] for j in sel0]
+    except ValueError as e:
+        st.error(str(e))
+        st.stop()
 
-        # (1) powers on provisional set
-        if laser_strategy == "Simultaneous":
-            powers_A, _ = derive_powers_simultaneous(
-                wl, dye_db, A_labels, laser_list
-            )
-        else:
-            powers_A, _ = derive_powers_separate(
-                wl, dye_db, A_labels, laser_list
-            )
+    A_labels = [labels0[j] for j in sel0]
 
-        # First build (all candidates, with lasers) at 1 nm grid
-        E_raw_all, E_norm_all, labels_all, idx_all = cached_build_effective_with_lasers(
-            wl, dye_db, groups, laser_list, laser_strategy, powers_A
-        )
+    # (1) powers on provisional set
+    if laser_strategy == "Simultaneous":
+        powers_A, _ = derive_powers_simultaneous(wl, dye_db, A_labels, laser_list)
+    else:
+        powers_A, _ = derive_powers_separate(wl, dye_db, A_labels, laser_list)
 
-        # For selection + similarity: choose resolution
-        if (
-            spec_res_mode == "33 detection channels (Valm lab)"
-            and laser_strategy == "Simultaneous"
-        ):
-            # Compress 1 nm spectra to 33 detection channels
-            E_raw_all_33 = cached_interpolate_E_on_channels(
-                wl, E_raw_all, DETECTION_CHANNELS
-            )
-            E_raw_all_33 = apply_mbs_zeroing(
-                E_raw_all_33, laser_strategy, spec_res_mode, laser_list
-            )
-            denom_all = np.linalg.norm(E_raw_all_33, axis=0, keepdims=True) + 1e-12
-            E_norm_for_select = E_raw_all_33 / denom_all
-        else:
-            # Fall back to 1 nm grid for selection
-            E_norm_for_select = E_norm_all
+    # First build all candidates with lasers at 1 nm grid
+    E_raw_all, E_norm_all, labels_all, idx_all = cached_build_effective_with_lasers(
+        wl,
+        dye_db,
+        groups,
+        laser_list,
+        laser_strategy,
+        powers_A,
+    )
 
+    # For selection + similarity: choose resolution
+    if spec_res_mode == "33 detection channels (Valm lab)" and laser_strategy == "Simultaneous":
+        E_raw_all_33 = cached_interpolate_E_on_channels(wl, E_raw_all, DETECTION_CHANNELS)
+        E_raw_all_33 = apply_mbs_zeroing(E_raw_all_33, laser_strategy, spec_res_mode, laser_list)
+        denom_all = np.linalg.norm(E_raw_all_33, axis=0, keepdims=True) + 1e-12
+        E_norm_for_select = E_raw_all_33 / denom_all
+    else:
+        E_norm_for_select = E_norm_all
 
-        # BEST group (lexicographic minimization)
+    # BEST group
+    fixed_indices_all, allowed_indices_all = get_constraint_indices(labels_all)
+    try:
         sel_idx, _ = solve_lexicographic_k(
             E_norm_for_select,
             idx_all,
             labels_all,
             levels=10,
             enforce_unique=True,
-            required_count=required_count,
+            required_count=required_count_local,
+            fixed_indices=fixed_indices_all,
+            allowed_indices=allowed_indices_all,
         )
-        final_labels = [labels_all[j] for j in sel_idx]
+    except ValueError as e:
+        st.error(str(e))
+        st.stop()
 
-        # WORST group (same size, greedy heuristic)
-        worst_idx = select_worst_group(
-            E_norm_for_select,
-            labels_all,
-            idx_all,
-            required_count,
-            use_pool,
-        )
-        worst_labels = [labels_all[j] for j in worst_idx]
+    final_labels = [labels_all[j] for j in sel_idx]
 
+    # WORST group, same size, greedy heuristic
+    worst_idx = select_worst_group_constrained(
+        E_norm_for_select,
+        labels_all,
+        idx_all,
+        required_count_local,
+        use_pool,
+        fixed_fluorophores=fixed_fluorophores,
+        allowed_fluorophores=allowed_fluorophores,
+    )
+    worst_labels = [labels_all[j] for j in worst_idx]
 
-        # (2) recalibrate on final set
-        if laser_strategy == "Simultaneous":
-            powers, B = derive_powers_simultaneous(
-                wl, dye_db, final_labels, laser_list
-            )
-        else:
-            powers, B = derive_powers_separate(
-                wl, dye_db, final_labels, laser_list
-            )
+    # (2) recalibrate on final set
+    if laser_strategy == "Simultaneous":
+        powers, B = derive_powers_simultaneous(wl, dye_db, final_labels, laser_list)
+    else:
+        powers, B = derive_powers_separate(wl, dye_db, final_labels, laser_list)
 
-        # Build final spectra at 1 nm grid (only selected set)
-        if use_pool:
-            small_groups = {"Pool": [s.split(" – ", 1)[1] for s in final_labels]}
-        else:
-            small_groups = {}
-            for s in final_labels:
-                p, f = s.split(" – ", 1)
-                small_groups.setdefault(p, []).append(f)
+    # Build final spectra at 1 nm grid, only selected set
+    if use_pool:
+        small_groups = {"Pool": [fluor_from_label(s) for s in final_labels]}
+    else:
+        small_groups = {}
+        for s in final_labels:
+            p, f = s.split(" – ", 1)
+            small_groups.setdefault(p, []).append(f)
 
-        E_raw_sel_1nm, E_norm_sel_1nm, labels_sel, _ = cached_build_effective_with_lasers(
-            wl, dye_db, small_groups, laser_list, laser_strategy, powers
-        )
+    E_raw_sel_1nm, E_norm_sel_1nm, labels_sel, _ = cached_build_effective_with_lasers(
+        wl,
+        dye_db,
+        small_groups,
+        laser_list,
+        laser_strategy,
+        powers,
+    )
 
-        # For display / simulation: choose final resolution
-        if (
-            spec_res_mode == "33 detection channels (Valm lab)"
-            and laser_strategy == "Simultaneous"
-        ):
-            # Compress to 33 detection channels
-            E_raw_sel = cached_interpolate_E_on_channels(
-                wl, E_raw_sel_1nm, DETECTION_CHANNELS
-            )
-            E_raw_sel = apply_mbs_zeroing(
-                E_raw_sel, laser_strategy, spec_res_mode, laser_list
-            )
-            denom_sel = np.linalg.norm(E_raw_sel, axis=0, keepdims=True) + 1e-12
-            E_norm_sel = E_raw_sel / denom_sel
-            x_axis = DETECTION_CHANNELS
-        else:
-            E_raw_sel = E_raw_sel_1nm
-            E_norm_sel = E_norm_sel_1nm
-            x_axis = wl
+    # For display / simulation: choose final resolution
+    if spec_res_mode == "33 detection channels (Valm lab)" and laser_strategy == "Simultaneous":
+        E_raw_sel = cached_interpolate_E_on_channels(wl, E_raw_sel_1nm, DETECTION_CHANNELS)
+        E_raw_sel = apply_mbs_zeroing(E_raw_sel, laser_strategy, spec_res_mode, laser_list)
+        denom_sel = np.linalg.norm(E_raw_sel, axis=0, keepdims=True) + 1e-12
+        E_norm_sel = E_raw_sel / denom_sel
+        x_axis = DETECTION_CHANNELS
+    else:
+        E_raw_sel = E_raw_sel_1nm
+        E_norm_sel = E_norm_sel_1nm
+        x_axis = wl
 
-        # sort by emission peak wavelength
-        if labels_sel:
-            order, labels_sel = sorted_order_by_peak(labels_sel)
-            E_raw_sel = E_raw_sel[:, order]
-            E_norm_sel = E_norm_sel[:, order]
+    # sort by emission peak wavelength
+    if labels_sel:
+        order, labels_sel = sorted_order_by_peak(labels_sel)
+        E_raw_sel = E_raw_sel[:, order]
+        E_norm_sel = E_norm_sel[:, order]
 
-        colors = ensure_colors(len(labels_sel))
+    colors = ensure_colors(len(labels_sel))
 
-        # Selected fluorophores table (BEST)
-        st.subheader("Selected fluorophores (with lasers, best)")
-        fluors = [s.split(" – ", 1)[1] for s in labels_sel]
+    # Selected fluorophores table
+    st.subheader("Selected fluorophores (with lasers, best)")
+    fluors = [fluor_from_label(s) for s in labels_sel]
+    html_two_row_table(
+        "Slot",
+        "Fluorophore",
+        [f"Slot {i + 1}" for i in range(len(fluors))],
+        fluors,
+    )
+
+    # Worst group, only as a contrast list
+    if worst_labels:
+        order_w, worst_labels = sorted_order_by_peak(worst_labels)
+        worst_fluors = [fluor_from_label(s) for s in worst_labels]
+        st.markdown("**Worst fluorophores (same count)**")
         html_two_row_table(
             "Slot",
             "Fluorophore",
-            [f"Slot {i+1}" for i in range(len(fluors))],
-            fluors,
+            [f"Slot {i + 1}" for i in range(len(worst_fluors))],
+            worst_fluors,
         )
 
-        # Worst group (same count), only作为一个对照列表，不做 simulation
-        if worst_labels:
-            # 按峰值波长排序一下 worst_labels
-            order_w, worst_labels = sorted_order_by_peak(worst_labels)
-            worst_fluors = [s.split(" – ", 1)[1] for s in worst_labels]
-            st.markdown("**Worst fluorophores (same count)**")
-            html_two_row_table(
-                "Slot",
-                "Fluorophore",
-                [f"Slot {i+1}" for i in range(len(worst_fluors))],
-                worst_fluors,
+    # Pairwise similarity
+    S = cosine_similarity_matrix(E_norm_sel)
+    tops = top_k_pairwise(S, labels_sel, k=k_show)
+    st.subheader("Top pairwise similarities")
+    html_two_row_table(
+        "Pair",
+        "Similarity",
+        [pair_only_fluor(a, b) for _, a, b in tops],
+        [val for val, _, _ in tops],
+        color_second_row=True,
+        color_thresh=0.9,
+        fmt2=True,
+    )
+
+    # Spectra viewer
+    st.subheader("Spectra viewer")
+    fig = go.Figure()
+    for t in range(len(labels_sel)):
+        y = E_raw_sel[:, t] / (B + 1e-12)
+        fig.add_trace(
+            go.Scatter(
+                x=x_axis,
+                y=y,
+                mode="lines",
+                name=labels_sel[t],
+                line=dict(color=rgb01_to_plotly(colors[t]), width=2),
             )
-
-
-        # Pairwise similarity
-        S = cosine_similarity_matrix(E_norm_sel)
-        tops = top_k_pairwise(S, labels_sel, k=k_show)
-        st.subheader("Top pairwise similarities")
-        html_two_row_table(
-            "Pair",
-            "Similarity",
-            [pair_only_fluor(a, b) for _, a, b in tops],
-            [val for val, _, _ in tops],
-            color_second_row=True,
-            color_thresh=0.9,
-            fmt2=True,
         )
+    fig.update_layout(
+        xaxis_title="Wavelength (nm)",
+        yaxis_title="Normalized intensity (relative to B)",
+        yaxis=dict(range=[0, 1.05]),
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-        # Spectra viewer
-        st.subheader("Spectra viewer")
-        fig = go.Figure()
-        for t in range(len(labels_sel)):
-            y = E_raw_sel[:, t] / (B + 1e-12)
-            fig.add_trace(
-                go.Scatter(
-                    x=x_axis,
-                    y=y,
-                    mode="lines",
-                    name=labels_sel[t],
-                    line=dict(color=rgb01_to_plotly(colors[t]), width=2),
-                )
-            )
-        fig.update_layout(
-            xaxis_title="Wavelength (nm)",
-            yaxis_title="Normalized intensity (relative to B)",
-            yaxis=dict(range=[0, 1.05]),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    # ---------- Simulation ----------
+    if spec_res_mode == "33 detection channels (Valm lab)" and laser_strategy == "Simultaneous":
+        E_chan = E_raw_sel / (B + 1e-12)
+    else:
+        E_chan = E_raw_sel / (B + 1e-12)
 
-        # ---------- Simulation ----------
-        if (
-            spec_res_mode == "33 detection channels (Valm lab)"
-            and laser_strategy == "Simultaneous"
-        ):
-            chan = DETECTION_CHANNELS
-            E_chan = E_raw_sel / (B + 1e-12)
-        else:
-            chan = wl
-            E_chan = E_raw_sel / (B + 1e-12)
+    Atrue, Ahat = simulate_rods_and_unmix(E_chan, rods_per=3)
 
-        Atrue, Ahat = simulate_rods_and_unmix(E_chan, rods_per=3)
+    colL, colR = st.columns(2)
+    true_rgb = (colorize_composite(Atrue, colors) * 255).astype(np.uint8)
+    labelmap_rgb = argmax_labelmap(Ahat, colors)
 
-        colL, colR = st.columns(2)
-        true_rgb = (colorize_composite(Atrue, colors) * 255).astype(np.uint8)
-        labelmap_rgb = argmax_labelmap(Ahat, colors)
-        with colL:
-            st.image(true_rgb, use_container_width=True, clamp=True)
-            st.caption("True")
-        with colR:
-            st.image(labelmap_rgb, use_container_width=True, clamp=True)
-            st.caption("Unmixing results")
+    with colL:
+        st.image(true_rgb, use_container_width=True, clamp=True)
+        st.caption("True")
+    with colR:
+        st.image(labelmap_rgb, use_container_width=True, clamp=True)
+        st.caption("Unmixing results")
 
-        names = [prettify_name(s) for s in labels_sel]
-        unmix_bw = [to_uint8_gray(Ahat[:, :, r]) for r in range(Ahat.shape[2])]
+    names = [prettify_name(s) for s in labels_sel]
+    unmix_bw = [to_uint8_gray(Ahat[:, :, r]) for r in range(Ahat.shape[2])]
+    st.divider()
+    show_bw_grid("Per-fluorophore (Unmixing, grayscale)", unmix_bw, names, cols_per_row=6)
 
-        st.divider()
-        show_bw_grid("Per-fluorophore (Unmixing, grayscale)", unmix_bw, names, cols_per_row=6)
+    prop_vals, acc_vals = compute_prop_and_accuracy(Atrue, Ahat)
+    rmse_vals = []
+    for r in range(len(names)):
+        rmse_vals.append(np.sqrt(np.mean((Ahat[:, :, r] - Atrue[:, :, r]) ** 2)))
 
-        # proportion & accuracy
-        prop_vals, acc_vals = compute_prop_and_accuracy(Atrue, Ahat)
-
-        # RMSE
-        rmse_vals = []
-        for r in range(len(names)):
-            rmse_vals.append(
-                np.sqrt(np.mean((Ahat[:, :, r] - Atrue[:, :, r]) ** 2))
-            )
-
-        # one combined metrics table
-        metric_header(
-            "Per-fluorophore metrics",
-            "RMSE: Root-mean-square error of the estimated abundance map for each fluorophore. "
-            "Proportion: For each fluorophore, we look at pixels where its true abundance is nonzero "
-            "and compute A_r / sum_k A_k, then average these ratios (ignoring pixels where the sum is zero). "
-            "Accuracy: For each fluorophore, among pixels where its true abundance is nonzero, "
-            "accuracy is the fraction of pixels where this fluorophore has the largest estimated abundance.",
-        )
-        render_metrics_table(names, rmse_vals, prop_vals, acc_vals)
-
-
-        return
+    metric_header(
+        "Per-fluorophore metrics",
+        "RMSE: Root-mean-square error of the estimated abundance map for each fluorophore. "
+        "Proportion: For each fluorophore, we look at pixels where its true abundance is nonzero "
+        "and compute A_r / sum_k A_k, then average these ratios (ignoring pixels where the sum is zero). "
+        "Accuracy: For each fluorophore, among pixels where its true abundance is nonzero, "
+        "accuracy is the fraction of pixels where this fluorophore has the largest estimated abundance.",
+    )
+    render_metrics_table(names, rmse_vals, prop_vals, acc_vals)
+    return
 
 
 # -------------------- Execute --------------------
-
 run(groups, mode, laser_strategy, laser_list, spec_res_mode)
