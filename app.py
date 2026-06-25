@@ -377,66 +377,280 @@ if mode == "Predicted spectra":
 use_pool = False
 pool = []
 
+fixed_fluorophores = []
+allowed_fluorophores = []
+fixed_probe_pairs = []
+required_count = None
+
 if source_mode == "From readout pool":
     pool = readout_pool[:]
     if not pool:
         st.info("Readout pool not found (data/readout_fluorophores.yaml).")
         st.stop()
-    max_n = len(pool)
-    N_pick = st.number_input(
-        "How many fluorophores",
-        1,
-        max_n,
-        min(4, max_n),
-        1,
-        key="n_pick_pool",
-    )
-    groups = {"Pool": pool}
+
     use_pool = True
+    all_available_fluors = sorted(set(pool))
+
+    st.sidebar.subheader("Fluorophore constraints")
+
+    fixed_fluorophores = st.sidebar.multiselect(
+        "Fixed fluorophores",
+        options=all_available_fluors,
+        default=[],
+        help=(
+            "These fluorophores will be forced into the final selected panel. "
+            "The optimizer will choose the remaining fluorophores around them."
+        ),
+        key="fixed_fluorophores_pool",
+    )
+
+    candidate_options = [f for f in all_available_fluors if f not in fixed_fluorophores]
+
+    allowed_fluorophores = st.sidebar.multiselect(
+        "Candidate fluorophores for additional selection",
+        options=candidate_options,
+        default=candidate_options,
+        help=(
+            "The optimizer can only choose additional fluorophores from this list. "
+            "Fixed fluorophores are always included."
+        ),
+        key="allowed_fluorophores_pool",
+    )
+
+    label_n = (
+        "How many additional fluorophores to choose"
+        if fixed_fluorophores
+        else "How many fluorophores to choose"
+    )
+
+    default_n = min(4, len(allowed_fluorophores))
+    n_additional = st.sidebar.number_input(
+        label_n,
+        min_value=0 if fixed_fluorophores else 1,
+        max_value=len(allowed_fluorophores),
+        value=default_n,
+        step=1,
+        key="n_additional_pool",
+    )
+
+    required_count = len(fixed_fluorophores) + int(n_additional)
+
+    if required_count == 0:
+        st.info("Select at least one fixed fluorophore or choose at least one additional fluorophore.")
+        st.stop()
+
+    constrained_pool = sorted(set(fixed_fluorophores) | set(allowed_fluorophores))
+
+    if not constrained_pool:
+        st.error("No fluorophores are available after applying constraints.")
+        st.stop()
+
+    groups = {"Pool": constrained_pool}
+
+    st.sidebar.caption(
+        f"Final panel size = {len(fixed_fluorophores)} fixed "
+        f"+ {int(n_additional)} additional = {required_count}."
+    )
 
 elif source_mode == "All fluorophores":
     pool = inventory_pool[:]
     if not pool:
         st.error("No fluorophores found in probe_fluor_map.yaml that also exist in dyes.yaml.")
         st.stop()
-    max_n = len(pool)
-    N_pick = st.number_input(
-        "How many fluorophores",
-        1,
-        max_n,
-        min(4, max_n),
-        1,
-        key="n_pick_inv",
-    )
-    groups = {"Pool": pool}
+
     use_pool = True
+    all_available_fluors = sorted(set(pool))
+
+    st.sidebar.subheader("Fluorophore constraints")
+
+    fixed_fluorophores = st.sidebar.multiselect(
+        "Fixed fluorophores",
+        options=all_available_fluors,
+        default=[],
+        help=(
+            "These fluorophores will be forced into the final selected panel. "
+            "The optimizer will choose the remaining fluorophores around them."
+        ),
+        key="fixed_fluorophores_inventory",
+    )
+
+    candidate_options = [f for f in all_available_fluors if f not in fixed_fluorophores]
+
+    allowed_fluorophores = st.sidebar.multiselect(
+        "Candidate fluorophores for additional selection",
+        options=candidate_options,
+        default=candidate_options,
+        help=(
+            "The optimizer can only choose additional fluorophores from this list. "
+            "Fixed fluorophores are always included."
+        ),
+        key="allowed_fluorophores_inventory",
+    )
+
+    label_n = (
+        "How many additional fluorophores to choose"
+        if fixed_fluorophores
+        else "How many fluorophores to choose"
+    )
+
+    default_n = min(4, len(allowed_fluorophores))
+    n_additional = st.sidebar.number_input(
+        label_n,
+        min_value=0 if fixed_fluorophores else 1,
+        max_value=len(allowed_fluorophores),
+        value=default_n,
+        step=1,
+        key="n_additional_inventory",
+    )
+
+    required_count = len(fixed_fluorophores) + int(n_additional)
+
+    if required_count == 0:
+        st.info("Select at least one fixed fluorophore or choose at least one additional fluorophore.")
+        st.stop()
+
+    constrained_pool = sorted(set(fixed_fluorophores) | set(allowed_fluorophores))
+
+    if not constrained_pool:
+        st.error("No fluorophores are available after applying constraints.")
+        st.stop()
+
+    groups = {"Pool": constrained_pool}
+
+    st.sidebar.caption(
+        f"Final panel size = {len(fixed_fluorophores)} fixed "
+        f"+ {int(n_additional)} additional = {required_count}."
+    )
 
 elif source_mode == "EUB338 only":
     pool = _get_eub338_pool()
     if not pool:
         st.error("No candidates found for EUB 338 in probe_fluor_map.yaml.")
         st.stop()
-    max_n = len(pool)
-    N_pick = st.number_input(
-        "How many fluorophores",
-        1,
-        max_n,
-        min(4, max_n),
-        1,
-        key="n_pick_eub338",
-    )
-    groups = {"Pool": pool}
+
     use_pool = True
+    all_available_fluors = sorted(set(pool))
+
+    st.sidebar.subheader("Fluorophore constraints")
+
+    fixed_fluorophores = st.sidebar.multiselect(
+        "Fixed fluorophores",
+        options=all_available_fluors,
+        default=[],
+        help=(
+            "These fluorophores will be forced into the final selected panel. "
+            "The optimizer will choose the remaining fluorophores around them."
+        ),
+        key="fixed_fluorophores_eub338",
+    )
+
+    candidate_options = [f for f in all_available_fluors if f not in fixed_fluorophores]
+
+    allowed_fluorophores = st.sidebar.multiselect(
+        "Candidate fluorophores for additional selection",
+        options=candidate_options,
+        default=candidate_options,
+        help=(
+            "The optimizer can only choose additional fluorophores from this list. "
+            "Fixed fluorophores are always included."
+        ),
+        key="allowed_fluorophores_eub338",
+    )
+
+    label_n = (
+        "How many additional fluorophores to choose"
+        if fixed_fluorophores
+        else "How many fluorophores to choose"
+    )
+
+    default_n = min(4, len(allowed_fluorophores))
+    n_additional = st.sidebar.number_input(
+        label_n,
+        min_value=0 if fixed_fluorophores else 1,
+        max_value=len(allowed_fluorophores),
+        value=default_n,
+        step=1,
+        key="n_additional_eub338",
+    )
+
+    required_count = len(fixed_fluorophores) + int(n_additional)
+
+    if required_count == 0:
+        st.info("Select at least one fixed fluorophore or choose at least one additional fluorophore.")
+        st.stop()
+
+    constrained_pool = sorted(set(fixed_fluorophores) | set(allowed_fluorophores))
+
+    if not constrained_pool:
+        st.error("No fluorophores are available after applying constraints.")
+        st.stop()
+
+    groups = {"Pool": constrained_pool}
+
+    st.sidebar.caption(
+        f"Final panel size = {len(fixed_fluorophores)} fixed "
+        f"+ {int(n_additional)} additional = {required_count}."
+    )
 
 else:
+    use_pool = False
+
     all_probes = sorted(probe_map.keys())
-    picked = st.multiselect("Probes", options=all_probes, key="picked_probes")
+
+    pair_options = []
+    pair_to_probe = {}
+    pair_to_fluor = {}
+
+    for p in all_probes:
+        cands = [f for f in probe_map.get(p, []) if f in dye_db]
+        for f in sorted(cands):
+            pair = f"{p} – {f}"
+            pair_options.append(pair)
+            pair_to_probe[pair] = p
+            pair_to_fluor[pair] = f
+
+    st.sidebar.subheader("Probe constraints")
+
+    fixed_probe_pairs = st.sidebar.multiselect(
+        "Fixed probe–fluorophore pairs",
+        options=pair_options,
+        default=[],
+        help=(
+            "These exact probe–fluorophore pairs will be forced into the final design. "
+            "For example, fixing 'EUB338 – AF488' means EUB338 will use AF488."
+        ),
+        key="fixed_probe_pairs",
+    )
+
+    fixed_probe_names = sorted({pair_to_probe[x] for x in fixed_probe_pairs})
+
+    remaining_probe_options = [p for p in all_probes if p not in fixed_probe_names]
+
+    picked_additional = st.sidebar.multiselect(
+        "Choose additional probes",
+        options=remaining_probe_options,
+        default=[],
+        help=(
+            "For each additional probe, the optimizer will select one fluorophore. "
+            "Fixed probe–fluorophore pairs are already included."
+        ),
+        key="picked_additional_probes",
+    )
+
+    picked = fixed_probe_names + picked_additional
+
     if not picked:
-        st.info("Select at least one probe to proceed.")
+        st.info("Select at least one fixed probe–fluorophore pair or choose at least one additional probe.")
         st.stop()
 
     groups = {}
-    for p in picked:
+
+    for pair in fixed_probe_pairs:
+        p = pair_to_probe[pair]
+        f = pair_to_fluor[pair]
+        groups[p] = [f]
+
+    for p in picked_additional:
         cands = [f for f in probe_map.get(p, []) if f in dye_db]
         if cands:
             groups[p] = cands
@@ -445,84 +659,7 @@ else:
         st.error("No valid candidates with spectra in dyes.yaml.")
         st.stop()
 
-    N_pick = None
-
-
-# -------------------- Manual constraints for pool modes --------------------
-fixed_fluorophores = []
-allowed_fluorophores = None
-required_count = N_pick if use_pool else None
-
-if use_pool:
-    st.sidebar.subheader("Manual constraints")
-
-    use_manual_constraints = st.sidebar.checkbox(
-        "Use fixed/allowed fluorophores",
-        value=False,
-        key="use_manual_constraints",
-        help="Force some fluorophores into the panel and restrict the candidates for the remaining slots.",
-    )
-
-    if use_manual_constraints:
-        all_available_fluors = sorted(set(pool))
-
-        fixed_fluorophores = st.sidebar.multiselect(
-            "Fixed fluorophores",
-            options=all_available_fluors,
-            default=[],
-            help=(
-                "These fluorophores will be forced into the final selected panel. "
-                "The optimizer will select the remaining fluorophores around them."
-            ),
-            key="fixed_fluorophores",
-        )
-
-        candidate_options = [f for f in all_available_fluors if f not in fixed_fluorophores]
-
-        allowed_fluorophores = st.sidebar.multiselect(
-            "Allowed candidates for additional selection",
-            options=candidate_options,
-            default=candidate_options,
-            help=(
-                "The optimizer can only choose additional fluorophores from this list. "
-                "Fixed fluorophores are always included."
-            ),
-            key="allowed_fluorophores",
-        )
-
-        default_additional = min(
-            max(0, int(N_pick) - len(fixed_fluorophores)),
-            len(allowed_fluorophores),
-        )
-        n_additional = st.sidebar.number_input(
-            "How many additional fluorophores",
-            min_value=0,
-            max_value=len(allowed_fluorophores),
-            value=default_additional,
-            step=1,
-            key="n_additional_fluors",
-        )
-
-        required_count = len(fixed_fluorophores) + int(n_additional)
-
-        if required_count == 0:
-            st.info("Select at least one fixed fluorophore or choose at least one additional fluorophore.")
-            st.stop()
-
-        constrained_pool = sorted(set(fixed_fluorophores) | set(allowed_fluorophores))
-        if not constrained_pool:
-            st.error("No fluorophores are available after applying manual constraints.")
-            st.stop()
-
-        groups = {"Pool": constrained_pool}
-
-        st.sidebar.caption(
-            f"Final panel size = {len(fixed_fluorophores)} fixed + {int(n_additional)} additional = {required_count}."
-        )
-    else:
-        fixed_fluorophores = []
-        allowed_fluorophores = sorted(set(pool))
-        required_count = N_pick
+    required_count = None
 
 
 # -------------------- Core runner --------------------
@@ -530,23 +667,31 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
     required_count_local = required_count if use_pool else None
 
     def get_constraint_indices(labels):
-        if not use_pool:
-            return None, None
-
-        fixed_set = set(fixed_fluorophores or [])
-        allowed_set = set(allowed_fluorophores or [])
-
         fixed_indices = []
-        allowed_indices = []
+        allowed_indices = None
+
+        if use_pool:
+            fixed_set = set(fixed_fluorophores or [])
+            allowed_set = set(allowed_fluorophores or [])
+
+            allowed_indices = []
+
+            for j, lab in enumerate(labels):
+                fluor = fluor_from_label(lab)
+                if fluor in fixed_set:
+                    fixed_indices.append(j)
+                if fluor in allowed_set:
+                    allowed_indices.append(j)
+
+            return fixed_indices, allowed_indices
+
+        fixed_pair_set = set(fixed_probe_pairs or [])
 
         for j, lab in enumerate(labels):
-            fluor = fluor_from_label(lab)
-            if fluor in fixed_set:
+            if lab in fixed_pair_set:
                 fixed_indices.append(j)
-            if fluor in allowed_set:
-                allowed_indices.append(j)
 
-        return fixed_indices, allowed_indices
+        return fixed_indices, None
 
     # ---------- EMISSION MODE ----------
     if mode == "Emission spectra":
