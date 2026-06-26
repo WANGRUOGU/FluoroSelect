@@ -349,7 +349,7 @@ def _run_emission_mode(
         acc_vals=acc_vals,
         pair_formatter=pair_only_fluor,
     )
-    render_ai_result_panel(result_context, app_context)
+    render_ai_result_panel(result_context, ai_app_context)
 
 
 def _run_predicted_mode(
@@ -551,4 +551,4 @@ def _run_predicted_mode(
         acc_vals=acc_vals,
         pair_formatter=pair_only_fluor,
     )
-    render_ai_result_panel(result_context, app_context)
+  render_ai_result_panel(result_context, ai_app_context)
