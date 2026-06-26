@@ -825,6 +825,45 @@ else:
 
     required_count = None
 
+def render_ai_result_panel(result_context):
+    with st.expander("AI assistant for this result", expanded=False):
+        st.caption(
+            "AI assistance is optional. The fluorophore selection is computed by "
+            "the FluoroSelect optimizer, not by the AI model."
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("Explain this result", key=f"ai_explain_{result_context['run_id']}"):
+                with st.spinner("Generating explanation..."):
+                    text = explain_result(result_context)
+                st.markdown(text)
+
+        with col2:
+            if st.button("Suggest improvements", key=f"ai_suggest_{result_context['run_id']}"):
+                with st.spinner("Generating suggestions..."):
+                    text = suggest_improvements(result_context)
+                st.markdown(text)
+
+        if st.button("Generate Methods paragraph", key=f"ai_methods_{result_context['run_id']}"):
+            with st.spinner("Generating Methods draft..."):
+                text = generate_methods_text(result_context)
+            st.markdown(text)
+
+        question = st.text_area(
+            "Ask a question about this result",
+            placeholder="Example: Why is this pair risky? Should I reduce the number of fluorophores?",
+            key=f"ai_question_{result_context['run_id']}",
+        )
+
+        if st.button("Ask AI", key=f"ai_ask_{result_context['run_id']}"):
+            if not question.strip():
+                st.warning("Please enter a question.")
+            else:
+                with st.spinner("Answering..."):
+                    text = answer_light_question(question, ai_app_context, result_context)
+                st.markdown(text)
 
 # -------------------- Core runner --------------------
 def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
@@ -1007,7 +1046,39 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
             "accuracy is the fraction of pixels where this fluorophore has the largest estimated abundance.",
         )
         render_metrics_table(names, rmse_vals, prop_vals, acc_vals)
-        return
+
+result_context = {
+    "run_id": "emission",
+    "mode": mode,
+    "selection_source": source_mode,
+    "laser_strategy": laser_strategy,
+    "lasers": laser_list,
+    "spectral_resolution": spec_res_mode,
+    "use_pool": use_pool,
+    "fixed_probe_fluorophore_pairs": fixed_probe_pairs,
+    "fixed_fluorophores": fixed_fluorophores,
+    "allowed_fluorophores": allowed_fluorophores,
+    "selected_labels": [labels[j] for j in sel_idx],
+    "selected_fluorophores": [fluor_from_label(labels[j]) for j in sel_idx],
+    "top_pairwise_similarities": [
+        {
+            "similarity": float(val),
+            "label_1": a,
+            "label_2": b,
+            "fluorophore_pair": pair_only_fluor(a, b),
+        }
+        for val, a, b in tops
+    ],
+    "metrics": {
+        "names": names,
+        "rmse": [float(x) for x in rmse_vals],
+        "proportion": [float(x) for x in prop_vals],
+        "accuracy": [float(x) for x in acc_vals],
+    },
+}
+
+render_ai_result_panel(result_context)
+return
 
     # ---------- PREDICTED MODE ----------
     if not laser_list:
@@ -1229,8 +1300,45 @@ def run(groups, mode, laser_strategy, laser_list, spec_res_mode):
         "accuracy is the fraction of pixels where this fluorophore has the largest estimated abundance.",
     )
     render_metrics_table(names, rmse_vals, prop_vals, acc_vals)
-    return
 
+result_context = {
+    "run_id": "predicted",
+    "mode": mode,
+    "selection_source": source_mode,
+    "laser_strategy": laser_strategy,
+    "lasers": laser_list,
+    "spectral_resolution": spec_res_mode,
+    "use_pool": use_pool,
+    "fixed_probe_fluorophore_pairs": fixed_probe_pairs,
+    "fixed_fluorophores": fixed_fluorophores,
+    "allowed_fluorophores": allowed_fluorophores,
+    "selected_labels": labels_sel,
+    "selected_fluorophores": [fluor_from_label(s) for s in labels_sel],
+    "top_pairwise_similarities": [
+        {
+            "similarity": float(val),
+            "label_1": a,
+            "label_2": b,
+            "fluorophore_pair": pair_only_fluor(a, b),
+        }
+        for val, a, b in tops
+    ],
+    "metrics": {
+        "names": names,
+        "rmse": [float(x) for x in rmse_vals],
+        "proportion": [float(x) for x in prop_vals],
+        "accuracy": [float(x) for x in acc_vals],
+    },
+}
+
+render_ai_result_panel(result_context)
+return
+
+st.caption(
+    "AI-assisted features are used only for input parsing, lightweight Q&A, "
+    "result explanation, and drafting suggestions. Optimization results are "
+    "computed by the FluoroSelect algorithm."
+)
 
 # -------------------- Execute --------------------
 run(groups, mode, laser_strategy, laser_list, spec_res_mode)
