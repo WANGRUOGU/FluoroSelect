@@ -9,6 +9,66 @@ from ai_helper import (
     generate_methods_text,
 )
 
+def build_ai_app_context(
+    *,
+    probe_map,
+    dye_db,
+    readout_pool,
+    inventory_pool,
+    eub338_pool,
+):
+    """
+    Build a compact context for Gemini.
+    This contains only allowed probes/fluorophores/settings, not raw spectra.
+    """
+    all_probes = sorted(probe_map.keys())
+
+    probe_to_fluors = {}
+    pair_options = []
+
+    for probe in all_probes:
+        cands = sorted([f for f in probe_map.get(probe, []) if f in dye_db])
+        probe_to_fluors[probe] = cands
+
+        for fluor in cands:
+            pair_options.append(f"{probe} – {fluor}")
+
+    return {
+        "available_modes": [
+            "Emission spectra",
+            "Predicted spectra",
+        ],
+        "available_laser_strategies": [
+            "Simultaneous",
+            "Separate",
+        ],
+        "available_spectral_resolutions": [
+            "1 nm (general)",
+            "33 detection channels (Valm lab)",
+        ],
+        "available_selection_sources": [
+            "By probes",
+            "From readout pool",
+            "All fluorophores",
+            "EUB338 only",
+        ],
+        "available_lasers_common": [
+            405,
+            445,
+            488,
+            514,
+            561,
+            594,
+            633,
+            639,
+        ],
+        "probes": all_probes,
+        "probe_to_fluorophores": probe_to_fluors,
+        "probe_fluorophore_pairs": pair_options,
+        "readout_pool": readout_pool,
+        "inventory_pool": inventory_pool,
+        "eub338_pool": eub338_pool,
+    }
 
 def apply_ai_plan_to_session_state(plan, app_context):
     """
