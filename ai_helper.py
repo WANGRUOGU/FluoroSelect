@@ -105,43 +105,58 @@ Rules:
 
 def explain_result(result_context: Dict[str, Any]) -> str:
     prompt = f"""
-Explain this FluoroSelect result.
+Explain this FluoroSelect result in a very concise way.
 
 Structured result:
 {json.dumps(result_context, indent=2, ensure_ascii=False)}
 
-Please explain:
-1. Why this selected panel is good or risky.
-2. Which fluorophore pairs are most concerning.
-3. Whether the current laser/spectral-resolution setting seems appropriate.
-4. Any limitations in the interpretation.
+Rules:
+- Maximum 5 bullet points.
+- Do not repeat all selected fluorophores.
+- Focus only on what the optimizer result implies.
+- Mention the riskiest pair only if top pairwise similarity is high.
+- Do not give generic fluorescence microscopy background.
+- Do not say obvious things like "more validation is needed" unless there is a specific reason.
+- Do not invent fluorophore properties not present in the data.
 
-Do not invent additional data.
+Output format:
+- Best aspect:
+- Main risk:
+- Risky pair:
+- Interpretation:
+- Practical note:
 """
     return call_gemini(prompt)
 
 
 def suggest_improvements(result_context: Dict[str, Any]) -> str:
     prompt = f"""
-Suggest practical improvements for this FluoroSelect result.
+Give concise next-step suggestions for this FluoroSelect result.
 
 Structured result:
 {json.dumps(result_context, indent=2, ensure_ascii=False)}
 
-Please suggest:
-1. Which selected fluorophore pairs may need replacement.
-2. Whether changing laser settings may help.
-3. Whether reducing or increasing panel size may help.
-4. What to test next experimentally.
+Rules:
+- Maximum 4 bullet points.
+- Base suggestions only on selected labels, pairwise similarities, lasers, mode, and metrics.
+- If a pair has high similarity, suggest replacing one member of that pair.
+- If metrics are weak, suggest reducing panel size or changing candidate constraints.
+- If predicted spectra with lasers are used, mention laser/spectral setting only when relevant.
+- No generic advice.
+- No long explanation.
 
-Do not invent fluorophore properties that are not supported by the result context.
+Output format:
+- Replace/check:
+- Constraint change:
+- Laser/spectral setting:
+- Next test:
 """
     return call_gemini(prompt)
 
 
 def answer_light_question(question: str, app_context: Dict[str, Any], result_context: Optional[Dict[str, Any]] = None) -> str:
     prompt = f"""
-Answer the user's question about FluoroSelect.
+Answer the user's question about FluoroSelect briefly.
 
 Available app context:
 {json.dumps(app_context, indent=2, ensure_ascii=False)}
@@ -152,7 +167,11 @@ Current result context:
 User question:
 {question}
 
-Answer concisely. If the answer requires data not provided, say what is missing.
+Rules:
+- Maximum 5 sentences.
+- Answer based on FluoroSelect settings/results only.
+- If information is missing, say exactly what is missing.
+- Do not give generic background.
 """
     return call_gemini(prompt)
 
