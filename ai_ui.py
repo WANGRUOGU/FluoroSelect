@@ -110,8 +110,12 @@ def apply_ai_plan_to_session_state(plan, app_context):
 
 
 def render_ai_input_assistant(app_context):
-    with st.sidebar.expander("AI input assistant", expanded=False):
-        st.caption("Optional: AI translates natural language into sidebar settings. The optimizer still performs selection.")
+    with st.expander("AI input assistant", expanded=False):
+        st.caption(
+            "Optional: AI translates natural language into FluoroSelect settings. "
+            "The optimizer still performs fluorophore selection."
+        )
+
         user_ai_request = st.text_area(
             "Describe what you want to select",
             placeholder=(
@@ -121,7 +125,18 @@ def render_ai_input_assistant(app_context):
             key="ai_user_request",
         )
 
-        if st.button("Parse and apply", key="ai_parse_apply"):
+        col1, col2 = st.columns([1, 3])
+
+        with col1:
+            parse_clicked = st.button("Parse and apply", key="ai_parse_apply")
+
+        with col2:
+            st.caption(
+                "Example: Fix EUB338 with AF488 and choose 4 additional probes "
+                "using predicted spectra with 488, 561, and 639 nm lasers."
+            )
+
+        if parse_clicked:
             if not user_ai_request.strip():
                 st.warning("Please enter a request first.")
             else:
@@ -131,8 +146,10 @@ def render_ai_input_assistant(app_context):
                         apply_ai_plan_to_session_state(plan, app_context)
                         st.session_state["last_ai_plan"] = plan
                         st.success("AI plan applied to the sidebar controls.")
+
                         if plan.get("warnings"):
                             st.warning("\n".join(plan["warnings"]))
+
                         st.rerun()
                     except Exception as exc:
                         st.error(f"AI parsing failed: {exc}")
