@@ -1,4 +1,5 @@
 # ai_ui.py
+import re
 import streamlit as st
 
 from ai_helper import (
@@ -8,6 +9,14 @@ from ai_helper import (
     answer_light_question,
     generate_methods_text,
 )
+
+
+DEFAULT_MODE = "Emission spectra"
+DEFAULT_LASERS = [488, 561, 639]
+DEFAULT_LASER_STRATEGY = "Simultaneous"
+DEFAULT_SPEC_RESOLUTION = "1 nm (general)"
+DEFAULT_N_FLUOROPHORES = 4
+
 
 def build_ai_app_context(
     *,
@@ -70,6 +79,231 @@ def build_ai_app_context(
         "eub338_pool": eub338_pool,
     }
 
+
+def _norm_text(x):
+    return re.sub(r"[^a-z0-9]+", "", str(x).lower())
+
+
+def _find_known_fluors(user_text, fluor_options):
+    text_norm = _norm_text(user_text)
+    found = []
+
+    for fluor in fluor_options:
+        if _norm_text(fluor) in text_norm:
+            found.append(fluor)
+
+    # Prefer longer names first if overlapping, then keep original order.
+    found = sorted(set(found), key=lambda x: (-len(x), x))
+    return found
+
+
+def _find_known_probes(user_text, probe_options):
+    text_norm = _norm_text(user_text)
+    found = []
+
+    for probe in probe_options:
+        if _norm_text(probe) in text_norm:
+            found.append(probe)
+
+    found = sorted(set(found), key=lambda x: (-len(x), x))
+    return found
+
+
+def _extract_number(user_text):
+    """
+    Extract a requested count from phrases like:
+    - choose 4 fluorophores
+    - choose another 4 fluorophores
+    - select 5
+    """
+    text = user_text.lower()
+
+    patterns = [
+        r"(?:choose|select|pick)\s+(?:another\s+)?(\d+)",
+        r"(\d+)\s+(?:more|additional|another)",
+        r"another\s+(\d+)",
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, text)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                pass
+
+    return None
+
+
+def _mentions_predicted(user_text):
+    text = user_text.lower()
+    return any(
+        key in text
+        for key in [
+            "predicted",
+            "effective",
+            "laser",
+            "lasers",
+            "excitation",
+            "with 488",
+            "with 561",
+            "with 639",
+        ]
+    )
+
+
+def _mentions_fluorophore_selection(user_text):
+    text = user_text.lower()
+    return any(
+        key in text
+        for key in [
+            "fluorophore",
+            "fluorophores",
+            "dye",
+            "dyes",
+            "another",
+            "more",
+            "additional",
+            "fix",
+            "fixed",
+        ]
+    )
+
+
+def _mentions_probe_usage_without_fluorophore(user_text, found_probes, found_fluors):
+    text = user_text.lower()
+
+    use_words = [
+        "use",
+        "using",
+        "with probes",
+        "probe",
+        "probes",
+        "用",
+        "使用",
+        "probe",
+    ]
+
+    if len(found_probes) >= 1 and not found_fluors:
+        return any(w in text for w in use_words)
+
+    return False
+
+
+def normalize_ai_plan(plan, user_text, app_context):
+    """
+    Deterministic fallback rules after Gemini parsing.
+
+    This ensures:
+    - default mode = Emission spectra
+    - default lasers = 488/561/639
+    - default pool source = All fluorophores
+    - default fluorophore count = 4
+    - "fix EUB338 with AF514" becomes fixed fluorophore AF514 in All fluorophores mode
+    - "use EUB338 and ACT476" becomes By probes mode
+    """
+    plan = dict(plan or {})
+
+    # Always provide defaults.
+    if not plan.get("mode"):
+        plan["mode"] = DEFAULT_MODE
+
+    if not plan.get("laser_strategy"):
+        plan["laser_strategy"] = DEFAULT_LASER_STRATEGY
+
+    if not plan.get("spectral_resolution"):
+        plan["spectral_resolution"] = DEFAULT_SPEC_RESOLUTION
+
+    if not plan.get("lasers"):
+        plan["lasers"] = DEFAULT_LASERS[:]
+
+    all_fluors = sorted(set(app_context.get("inventory_pool", [])))
+    all_probes = app_context.get("probes", [])
+
+    found_fluors = _find_known_fluors(user_text, all_fluors)
+    found_probes = _find_known_probes(user_text, all_probes)
+    requested_n = _extract_number(user_text)
+
+    # If the user mentions predicted/lasers, switch to predicted mode.
+    # Otherwise keep default Emission spectra.
+    if _mentions_predicted(user_text):
+        plan["mode"] = "Predicted spectra"
+        if not plan.get("laser_strategy"):
+            plan["laser_strategy"] = DEFAULT_LASER_STRATEGY
+        if not plan.get("lasers"):
+            plan["lasers"] = DEFAULT_LASERS[:]
+
+    # Case A:
+    # "use EUB338 and ACT476" means By probes, optimizer chooses fluorophores.
+    # This is only when no fluorophore name is mentioned.
+    if _mentions_probe_usage_without_fluorophore(user_text, found_probes, found_fluors):
+        plan["selection_source"] = "By probes"
+        plan["additional_probes"] = found_probes
+        plan["fixed_fluorophores"] = []
+        plan["fixed_probe_fluorophore_pairs"] = []
+        plan["candidate_fluorophores"] = []
+        plan["n_additional_fluorophores"] = None
+        return plan
+
+    # Case B:
+    # User mentions fluorophore selection or fixed fluorophore.
+    # Default to All fluorophores pool mode.
+    if _mentions_fluorophore_selection(user_text) or requested_n is not None:
+        plan["selection_source"] = "All fluorophores"
+
+        fixed_fluors = list(plan.get("fixed_fluorophores") or [])
+
+        # If Gemini returned a fixed probe-fluorophore pair, convert it to a fixed fluorophore
+        # for pool mode. This matches the desired behavior:
+        # "fix EUB338 with AF514 and choose another 4 fluorophores"
+        # -> All fluorophores, fixed AF514, choose 4 additional.
+        for item in plan.get("fixed_probe_fluorophore_pairs") or []:
+            fluor = item.get("fluorophore")
+            if fluor in all_fluors and fluor not in fixed_fluors:
+                fixed_fluors.append(fluor)
+
+        for fluor in found_fluors:
+            if fluor in all_fluors and fluor not in fixed_fluors:
+                # Only treat explicitly found fluorophores as fixed if the user used fix/fixed.
+                if "fix" in user_text.lower() or "fixed" in user_text.lower():
+                    fixed_fluors.append(fluor)
+
+        plan["fixed_fluorophores"] = fixed_fluors
+        plan["fixed_probe_fluorophore_pairs"] = []
+
+        if not plan.get("candidate_fluorophores"):
+            plan["candidate_fluorophores"] = []
+
+        # If user specifies a number, use it.
+        # If not, default to 4 additional fluorophores.
+        if requested_n is not None:
+            plan["n_additional_fluorophores"] = requested_n
+        elif not isinstance(plan.get("n_additional_fluorophores"), int):
+            plan["n_additional_fluorophores"] = DEFAULT_N_FLUOROPHORES
+
+        return plan
+
+    # Case C:
+    # If Gemini detected probes but source is missing, use By probes.
+    if found_probes and not found_fluors:
+        plan["selection_source"] = "By probes"
+        plan["additional_probes"] = found_probes
+        plan["fixed_probe_fluorophore_pairs"] = []
+        plan["fixed_fluorophores"] = []
+        plan["candidate_fluorophores"] = []
+        plan["n_additional_fluorophores"] = None
+        return plan
+
+    # Final fallback.
+    if not plan.get("selection_source"):
+        plan["selection_source"] = "All fluorophores"
+        plan["fixed_fluorophores"] = []
+        plan["candidate_fluorophores"] = []
+        plan["n_additional_fluorophores"] = DEFAULT_N_FLUOROPHORES
+
+    return plan
+
+
 def apply_ai_plan_to_session_state(plan, app_context):
     """
     Apply parsed AI plan to Streamlit widget keys.
@@ -100,6 +334,7 @@ def apply_ai_plan_to_session_state(plan, app_context):
 
     lasers = plan.get("lasers") or []
     clean_lasers = []
+
     for x in lasers:
         try:
             clean_lasers.append(int(x))
@@ -113,10 +348,12 @@ def apply_ai_plan_to_session_state(plan, app_context):
 
     # By probes
     fixed_pairs = []
+
     for item in plan.get("fixed_probe_fluorophore_pairs") or []:
         p = item.get("probe")
         f = item.get("fluorophore")
         pair = f"{p} – {f}"
+
         if pair in app_context["probe_fluorophore_pairs"]:
             fixed_pairs.append(pair)
 
@@ -128,12 +365,16 @@ def apply_ai_plan_to_session_state(plan, app_context):
         p for p in (plan.get("additional_probes") or [])
         if p in app_context["probes"]
     ]
+
     if additional_probes:
         st.session_state["picked_additional_probes"] = additional_probes
         st.session_state["source_radio"] = "By probes"
 
     # Pool modes
-    source_after = st.session_state.get("source_radio", source_val or "By probes")
+    source_after = st.session_state.get(
+        "source_radio",
+        source_val or plan.get("selection_source") or "All fluorophores",
+    )
 
     if source_after == "From readout pool":
         suffix = "pool"
@@ -151,6 +392,7 @@ def apply_ai_plan_to_session_state(plan, app_context):
     ]
 
     candidate_fluors_raw = plan.get("candidate_fluorophores") or []
+
     if candidate_fluors_raw:
         candidate_fluors = [
             f for f in candidate_fluors_raw
@@ -167,13 +409,18 @@ def apply_ai_plan_to_session_state(plan, app_context):
         st.session_state[f"allowed_fluorophores_{suffix}"] = candidate_fluors
 
         n_add = plan.get("n_additional_fluorophores")
+
         if isinstance(n_add, int):
             n_add = max(0, min(n_add, len(candidate_fluors)))
-            st.session_state[f"n_additional_{suffix}"] = n_add
+        else:
+            n_add = DEFAULT_N_FLUOROPHORES
+
+        st.session_state[f"n_additional_{suffix}"] = n_add
 
 
 def _submit_ai_input(app_context):
     user_text = st.session_state.get("ai_main_input", "").strip()
+
     if not user_text:
         return
 
@@ -190,17 +437,23 @@ def _submit_ai_input(app_context):
             st.session_state["last_ai_answer"] = f"AI question failed: {exc}"
         finally:
             st.session_state["ai_main_input"] = ""
+
         return
 
     # Default: parse selection request and apply to controls
     try:
-        plan = parse_user_request(user_text, app_context)
+        plan_raw = parse_user_request(user_text, app_context)
+        plan = normalize_ai_plan(plan_raw, user_text, app_context)
+
         apply_ai_plan_to_session_state(plan, app_context)
+
         st.session_state["last_ai_plan"] = plan
         st.session_state["ai_input_mode"] = "result_qa"
         st.session_state["ai_status_message"] = "Applied AI selection request."
+
     except Exception as exc:
         st.session_state["ai_status_message"] = f"AI parsing failed: {exc}"
+
     finally:
         st.session_state["ai_main_input"] = ""
 
@@ -233,6 +486,7 @@ def render_ai_input_assistant(app_context):
     )
 
     status = st.session_state.get("ai_status_message")
+
     if status:
         if status.startswith("AI parsing failed"):
             st.warning(status)
@@ -240,10 +494,12 @@ def render_ai_input_assistant(app_context):
             st.caption(status)
 
     answer = st.session_state.get("last_ai_answer")
+
     if answer:
         st.markdown(answer)
 
     col1, col2 = st.columns([1, 5])
+
     with col1:
         if st.button("New selection", key="ai_new_selection"):
             st.session_state["ai_input_mode"] = "selection"
@@ -261,7 +517,8 @@ def render_ai_result_panel(result_context, app_context):
 
     with st.expander("AI suggestions", expanded=False):
         st.caption(
-            "AI summarizes the optimizer result. The selected panel is computed by FluoroSelect, not by AI."
+            "AI summarizes the optimizer result. "
+            "The selected panel is computed by FluoroSelect, not by AI."
         )
 
         col1, col2, col3 = st.columns(3)
