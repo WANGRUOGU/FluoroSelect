@@ -34,6 +34,7 @@ def get_model_name() -> str:
 
 def call_gemini(prompt: str) -> str:
     client = get_gemini_client()
+
     if client is None:
         return (
             "Gemini API key is not configured. "
@@ -44,6 +45,7 @@ def call_gemini(prompt: str) -> str:
         model=get_model_name(),
         contents=f"{SYSTEM_MESSAGE}\n\n{prompt}",
     )
+
     return response.text or ""
 
 
@@ -60,6 +62,7 @@ def extract_json(text: str) -> Dict[str, Any]:
         pass
 
     match = re.search(r"\{.*\}", text, flags=re.S)
+
     if not match:
         raise ValueError(f"No JSON object found in Gemini output:\n{text}")
 
@@ -81,23 +84,59 @@ Return only JSON with this schema:
   "mode": "Emission spectra" or "Predicted spectra" or null,
   "laser_strategy": "Simultaneous" or "Separate" or null,
   "spectral_resolution": "1 nm (general)" or "33 detection channels (Valm lab)" or null,
-  "lasers": [405, 488, 561, 639] or [],
+  "lasers": [488, 561, 639] or [],
   "selection_source": "By probes" or "From readout pool" or "All fluorophores" or "EUB338 only" or null,
+
   "fixed_probe_fluorophore_pairs": [
     {{"probe": "probe name from context", "fluorophore": "fluorophore name from context"}}
   ],
+
   "additional_probes": ["probe name from context"],
   "fixed_fluorophores": ["fluorophore name from context"],
   "candidate_fluorophores": ["fluorophore name from context"],
   "n_additional_fluorophores": null or integer,
+
   "warnings": ["anything ambiguous or unsupported"]
 }}
 
-Rules:
+Important interpretation rules:
 - Use only probe and fluorophore names that appear in the provided app context.
-- If the user asks to fix a specific probe with a specific fluorophore, put it in fixed_probe_fluorophore_pairs.
-- If the user asks for pool selection, use fixed_fluorophores, candidate_fluorophores, and n_additional_fluorophores.
-- If ambiguous, set the field to null or [] and add a warning.
+- Default mode is "Emission spectra" unless the user explicitly says predicted/effective spectra or mentions laser-based spectra.
+- Default lasers are [488, 561, 639].
+- Default laser_strategy is "Simultaneous".
+- Default spectral_resolution is "1 nm (general)".
+
+Pool-selection rules:
+- If the user asks to select/choose/pick N fluorophores, use selection_source = "All fluorophores".
+- If the user says "fix PROBE with FLUOROPHORE and choose another N fluorophores",
+  use selection_source = "All fluorophores", fixed_fluorophores = [FLUOROPHORE],
+  n_additional_fluorophores = N.
+- If the user says "fix PROBE with FLUOROPHORE" without a number,
+  use selection_source = "All fluorophores", fixed_fluorophores = [FLUOROPHORE],
+  n_additional_fluorophores = 4.
+- In pool mode, do not put the fixed probe-fluorophore pair into fixed_probe_fluorophore_pairs.
+  Put only the fluorophore into fixed_fluorophores.
+- If candidate_fluorophores is not specified by the user, return [].
+
+By-probes rules:
+- If the user says they want to use specific probes, such as "use EUB338 and ACT476",
+  use selection_source = "By probes" and put those probes in additional_probes.
+- In By probes mode, do not choose fluorophores yourself. FluoroSelect optimizer will choose them.
+- If the user explicitly says "fix PROBE with FLUOROPHORE as a probe pair",
+  then use fixed_probe_fluorophore_pairs.
+- If the user gives only probe names and no fluorophore names, do not use fixed_fluorophores.
+
+Default number rule:
+- If selection_source is "All fluorophores" and the user does not specify a number,
+  use n_additional_fluorophores = 4.
+- If the user says "choose N fluorophores" and there are no fixed fluorophores,
+  use n_additional_fluorophores = N.
+- If the user says "choose another N fluorophores" and fixed_fluorophores is non-empty,
+  use n_additional_fluorophores = N.
+
+Warnings:
+- Add a warning only when a requested probe/fluorophore is not found or the request is truly unsupported.
+- Do not warn merely because default settings were used.
 """
     raw = call_gemini(prompt)
     return extract_json(raw)
@@ -105,25 +144,24 @@ Rules:
 
 def explain_result(result_context: Dict[str, Any]) -> str:
     prompt = f"""
-Explain this FluoroSelect result in a very concise way.
+Explain this FluoroSelect result very briefly.
 
 Structured result:
 {json.dumps(result_context, indent=2, ensure_ascii=False)}
 
 Rules:
-- Maximum 5 bullet points.
+- Maximum 4 bullet points.
+- Base the explanation only on optimizer outputs, selected labels, top pairwise similarities, lasers, and metrics.
 - Do not repeat all selected fluorophores.
-- Focus only on what the optimizer result implies.
-- Mention the riskiest pair only if top pairwise similarity is high.
-- Do not give generic fluorescence microscopy background.
-- Do not say obvious things like "more validation is needed" unless there is a specific reason.
-- Do not invent fluorophore properties not present in the data.
+- Do not give generic microscopy background.
+- Do not say "validation is needed" unless a specific metric or similarity suggests risk.
+- If the top similarity is not high, say the panel looks reasonably separated.
+- If the top similarity is high, identify the riskiest pair and say why it may be difficult.
 
 Output format:
-- Best aspect:
+- Overall:
 - Main risk:
-- Risky pair:
-- Interpretation:
+- Most concerning pair:
 - Practical note:
 """
     return call_gemini(prompt)
@@ -138,23 +176,27 @@ Structured result:
 
 Rules:
 - Maximum 4 bullet points.
-- Base suggestions only on selected labels, pairwise similarities, lasers, mode, and metrics.
-- If a pair has high similarity, suggest replacing one member of that pair.
+- Base suggestions only on selected labels, top pairwise similarities, lasers, mode, and metrics.
+- If a pair has high similarity, suggest replacing or constraining one member of that pair.
 - If metrics are weak, suggest reducing panel size or changing candidate constraints.
-- If predicted spectra with lasers are used, mention laser/spectral setting only when relevant.
+- If the result looks good, say no major change is needed and suggest testing the panel experimentally.
 - No generic advice.
 - No long explanation.
 
 Output format:
-- Replace/check:
-- Constraint change:
-- Laser/spectral setting:
-- Next test:
+- Keep:
+- Check:
+- Try next:
+- Avoid:
 """
     return call_gemini(prompt)
 
 
-def answer_light_question(question: str, app_context: Dict[str, Any], result_context: Optional[Dict[str, Any]] = None) -> str:
+def answer_light_question(
+    question: str,
+    app_context: Dict[str, Any],
+    result_context: Optional[Dict[str, Any]] = None,
+) -> str:
     prompt = f"""
 Answer the user's question about FluoroSelect briefly.
 
