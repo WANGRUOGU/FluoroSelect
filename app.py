@@ -33,6 +33,13 @@ from ui_helpers import (
 )
 from metrics import compute_prop_and_accuracy
 
+from ai_helper import (
+    parse_user_request,
+    explain_result,
+    suggest_improvements,
+    answer_light_question,
+    generate_methods_text,
+)
 
 st.set_page_config(page_title="Fluorophore Selection", layout="wide")
 st.title("Fluorophore Selection for Multiplexed Imaging")
