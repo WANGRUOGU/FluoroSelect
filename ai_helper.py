@@ -11,9 +11,9 @@ SYSTEM_MESSAGE = """
 You are an AI assistant embedded in FluoroSelect, a Streamlit app for fluorophore
 selection in multiplexed fluorescence microscopy.
 
-Important rules:
+Rules:
 - Do not invent fluorophores, probes, lasers, metrics, or experimental results.
-- Do not directly choose the final panel unless the optimizer result is provided.
+- Do not directly choose the final panel unless an optimizer result is provided.
 - For input parsing, return only valid JSON.
 - For result explanation, base your answer only on the provided structured data.
 - Make clear that the optimization result is computed by FluoroSelect, not by AI.
@@ -48,10 +48,6 @@ def call_gemini(prompt: str) -> str:
 
 
 def extract_json(text: str) -> Dict[str, Any]:
-    """
-    Robustly extract JSON from model output.
-    Gemini should return JSON only, but this protects against accidental markdown.
-    """
     text = text.strip()
 
     if text.startswith("```"):
@@ -71,11 +67,6 @@ def extract_json(text: str) -> Dict[str, Any]:
 
 
 def parse_user_request(user_text: str, app_context: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Convert natural-language user request into a structured FluoroSelect request.
-
-    The output is only a suggested UI state. app.py must validate all fields.
-    """
     prompt = f"""
 Convert the user's natural-language request into a structured JSON object for FluoroSelect.
 
@@ -92,24 +83,19 @@ Return only JSON with this schema:
   "spectral_resolution": "1 nm (general)" or "33 detection channels (Valm lab)" or null,
   "lasers": [405, 488, 561, 639] or [],
   "selection_source": "By probes" or "From readout pool" or "All fluorophores" or "EUB338 only" or null,
-
   "fixed_probe_fluorophore_pairs": [
     {{"probe": "probe name from context", "fluorophore": "fluorophore name from context"}}
   ],
-
   "additional_probes": ["probe name from context"],
   "fixed_fluorophores": ["fluorophore name from context"],
   "candidate_fluorophores": ["fluorophore name from context"],
   "n_additional_fluorophores": null or integer,
-
   "warnings": ["anything ambiguous or unsupported"]
 }}
 
 Rules:
 - Use only probe and fluorophore names that appear in the provided app context.
 - If the user asks to fix a specific probe with a specific fluorophore, put it in fixed_probe_fluorophore_pairs.
-- If the user asks to choose other probes, put them in additional_probes if explicitly named.
-- If the user only gives a number of additional probes but no names, put a warning.
 - If the user asks for pool selection, use fixed_fluorophores, candidate_fluorophores, and n_additional_fluorophores.
 - If ambiguous, set the field to null or [] and add a warning.
 """
