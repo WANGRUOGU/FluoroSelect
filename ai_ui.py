@@ -18,6 +18,93 @@ DEFAULT_SPEC_RESOLUTION = "1 nm (general)"
 DEFAULT_N_FLUOROPHORES = 4
 
 
+def _norm_text(x):
+    return re.sub(r"[^a-z0-9]+", "", str(x).lower())
+
+
+def _choose_canonical_probe_name(names):
+    """
+    Choose one display name among equivalent probe aliases.
+
+    Example:
+        EUB 338 and EUB338 are treated as the same probe.
+        Prefer compact names such as EUB338.
+    """
+    names = sorted(set(str(x).strip() for x in names if str(x).strip()))
+
+    compact = [
+        x for x in names
+        if _norm_text(x) == str(x).lower()
+    ]
+
+    if compact:
+        return sorted(compact, key=lambda x: (len(x), x.lower()))[0]
+
+    return sorted(names, key=lambda x: (len(x), x.lower()))[0]
+
+
+def _build_probe_alias_maps(probe_map):
+    """
+    Build map from raw probe names to canonical probe names.
+    """
+    aliases_by_norm = {}
+
+    for probe in probe_map.keys():
+        key = _norm_text(probe)
+        aliases_by_norm.setdefault(key, []).append(probe)
+
+    canonical_by_norm = {
+        key: _choose_canonical_probe_name(aliases)
+        for key, aliases in aliases_by_norm.items()
+    }
+
+    alias_to_canonical = {}
+
+    for probe in probe_map.keys():
+        key = _norm_text(probe)
+        alias_to_canonical[probe] = canonical_by_norm[key]
+
+    return alias_to_canonical
+
+
+def _dedupe_probe_names(probes, app_context):
+    """
+    Deduplicate probe names by normalized form.
+
+    Example:
+        EUB 338 and EUB338 are treated as the same probe.
+    """
+    alias_to_canonical = app_context.get("probe_alias_to_canonical", {})
+
+    canonical_by_norm = {}
+
+    for probe in app_context.get("probes", []):
+        canonical_by_norm[_norm_text(probe)] = probe
+
+    for alias, canonical in alias_to_canonical.items():
+        canonical_by_norm[_norm_text(alias)] = canonical
+
+    out = []
+    seen = set()
+
+    for probe in probes or []:
+        key = _norm_text(probe)
+
+        if key not in canonical_by_norm:
+            continue
+
+        canonical = canonical_by_norm[key]
+        canonical_key = _norm_text(canonical)
+
+        if canonical_key in seen:
+            continue
+
+        out.append(canonical)
+        seen.add(canonical_key)
+
+    return out
+
+
 def build_ai_app_context(
     *,
     probe_map,
@@ -97,80 +184,6 @@ def build_ai_app_context(
         "eub338_pool": eub338_pool,
     }
 
-def _norm_text(x):
-    return re.sub(r"[^a-z0-9]+", "", str(x).lower())
-
-def _choose_canonical_probe_name(names):
-    names = sorted(set(str(x).strip() for x in names if str(x).strip()))
-
-    compact = [
-        x for x in names
-        if _norm_text(x) == str(x).lower()
-    ]
-
-    if compact:
-        return sorted(compact, key=lambda x: (len(x), x.lower()))[0]
-
-    return sorted(names, key=lambda x: (len(x), x.lower()))[0]
-
-
-def _build_probe_alias_maps(probe_map):
-    aliases_by_norm = {}
-
-    for probe in probe_map.keys():
-        key = _norm_text(probe)
-        aliases_by_norm.setdefault(key, []).append(probe)
-
-    canonical_by_norm = {
-        key: _choose_canonical_probe_name(aliases)
-        for key, aliases in aliases_by_norm.items()
-    }
-
-    alias_to_canonical = {}
-
-    for probe in probe_map.keys():
-        key = _norm_text(probe)
-        alias_to_canonical[probe] = canonical_by_norm[key]
-
-    return alias_to_canonical
-
-
-def _dedupe_probe_names(probes, app_context):
-    """
-    Deduplicate probe names by normalized form.
-
-    Example:
-        EUB 338 and EUB338 are treated as the same probe.
-    """
-    alias_to_canonical = app_context.get("probe_alias_to_canonical", {})
-
-    canonical_by_norm = {}
-
-    for probe in app_context.get("probes", []):
-        canonical_by_norm[_norm_text(probe)] = probe
-
-    for alias, canonical in alias_to_canonical.items():
-        canonical_by_norm[_norm_text(alias)] = canonical
-
-    out = []
-    seen = set()
-
-    for probe in probes or []:
-        key = _norm_text(probe)
-
-        if key not in canonical_by_norm:
-            continue
-
-        canonical = canonical_by_norm[key]
-        canonical_key = _norm_text(canonical)
-
-        if canonical_key in seen:
-            continue
-
-        out.append(canonical)
-        seen.add(canonical_key)
-
-    return out
 
 def _find_known_fluors(user_text, fluor_options):
     text_norm = _norm_text(user_text)
@@ -180,7 +193,6 @@ def _find_known_fluors(user_text, fluor_options):
         if _norm_text(fluor) in text_norm:
             found.append(fluor)
 
-    # Prefer longer names first if overlapping, then keep original order.
     found = sorted(set(found), key=lambda x: (-len(x), x))
     return found
 
@@ -213,10 +225,10 @@ def _extract_number(user_text):
     ]
 
     for pat in patterns:
-        m = re.search(pat, text)
-        if m:
+        match = re.search(pat, text)
+        if match:
             try:
-                return int(m.group(1))
+                return int(match.group(1))
             except Exception:
                 pass
 
@@ -225,6 +237,7 @@ def _extract_number(user_text):
 
 def _mentions_predicted(user_text):
     text = user_text.lower()
+
     return any(
         key in text
         for key in [
@@ -242,6 +255,7 @@ def _mentions_predicted(user_text):
 
 def _mentions_fluorophore_selection(user_text):
     text = user_text.lower()
+
     return any(
         key in text
         for key in [
@@ -269,13 +283,13 @@ def _mentions_probe_usage_without_fluorophore(user_text, found_probes, found_flu
         "probes",
         "用",
         "使用",
-        "probe",
     ]
 
     if len(found_probes) >= 1 and not found_fluors:
         return any(w in text for w in use_words)
 
     return False
+
 
 def _looks_like_selection_request(user_text):
     """
@@ -315,15 +329,14 @@ def _looks_like_selection_request(user_text):
         "risky",
     ]
 
-    # Explicit new-selection commands should win.
     if any(k in text for k in selection_keywords):
         return True
 
-    # Obvious questions should stay as Q&A.
     if any(k in text for k in question_keywords):
         return False
 
     return False
+
 
 def normalize_ai_plan(plan, user_text, app_context):
     """
@@ -339,7 +352,6 @@ def normalize_ai_plan(plan, user_text, app_context):
     """
     plan = dict(plan or {})
 
-    # Always provide defaults.
     if not plan.get("mode"):
         plan["mode"] = DEFAULT_MODE
 
@@ -362,8 +374,6 @@ def normalize_ai_plan(plan, user_text, app_context):
     )
     requested_n = _extract_number(user_text)
 
-    # If the user mentions predicted/lasers, switch to predicted mode.
-    # Otherwise keep default Emission spectra.
     if _mentions_predicted(user_text):
         plan["mode"] = "Predicted spectra"
         if not plan.get("laser_strategy"):
@@ -372,11 +382,11 @@ def normalize_ai_plan(plan, user_text, app_context):
             plan["lasers"] = DEFAULT_LASERS[:]
 
     # Case A:
-    # "use EUB338 and ACT476" means By probes, optimizer chooses fluorophores.
-    # This is only when no fluorophore name is mentioned.
+    # "use EUB338 and ACT476" means By probes.
+    # FluoroSelect optimizer chooses fluorophores.
     if _mentions_probe_usage_without_fluorophore(user_text, found_probes, found_fluors):
         plan["selection_source"] = "By probes"
-        plan["additional_probes"] = found_probes
+        plan["additional_probes"] = _dedupe_probe_names(found_probes, app_context)
         plan["fixed_fluorophores"] = []
         plan["fixed_probe_fluorophore_pairs"] = []
         plan["candidate_fluorophores"] = []
@@ -384,25 +394,22 @@ def normalize_ai_plan(plan, user_text, app_context):
         return plan
 
     # Case B:
-    # User mentions fluorophore selection or fixed fluorophore.
-    # Default to All fluorophores pool mode.
+    # Pool fluorophore selection.
     if _mentions_fluorophore_selection(user_text) or requested_n is not None:
         plan["selection_source"] = "All fluorophores"
 
         fixed_fluors = list(plan.get("fixed_fluorophores") or [])
 
-        # If Gemini returned a fixed probe-fluorophore pair, convert it to a fixed fluorophore
-        # for pool mode. This matches the desired behavior:
-        # "fix EUB338 with AF514 and choose another 4 fluorophores"
-        # -> All fluorophores, fixed AF514, choose 4 additional.
+        # Convert Gemini fixed pairs into fixed fluorophores for pool mode.
         for item in plan.get("fixed_probe_fluorophore_pairs") or []:
             fluor = item.get("fluorophore")
             if fluor in all_fluors and fluor not in fixed_fluors:
                 fixed_fluors.append(fluor)
 
+        # If user explicitly says fix/fixed and mentions a known fluorophore,
+        # treat that fluorophore as fixed.
         for fluor in found_fluors:
             if fluor in all_fluors and fluor not in fixed_fluors:
-                # Only treat explicitly found fluorophores as fixed if the user used fix/fixed.
                 if "fix" in user_text.lower() or "fixed" in user_text.lower():
                     fixed_fluors.append(fluor)
 
@@ -412,8 +419,6 @@ def normalize_ai_plan(plan, user_text, app_context):
         if not plan.get("candidate_fluorophores"):
             plan["candidate_fluorophores"] = []
 
-        # If user specifies a number, use it.
-        # If not, default to 4 additional fluorophores.
         if requested_n is not None:
             plan["n_additional_fluorophores"] = requested_n
         elif not isinstance(plan.get("n_additional_fluorophores"), int):
@@ -422,10 +427,10 @@ def normalize_ai_plan(plan, user_text, app_context):
         return plan
 
     # Case C:
-    # If Gemini detected probes but source is missing, use By probes.
+    # Probe names without fluorophore names.
     if found_probes and not found_fluors:
         plan["selection_source"] = "By probes"
-        plan["additional_probes"] = found_probes
+        plan["additional_probes"] = _dedupe_probe_names(found_probes, app_context)
         plan["fixed_probe_fluorophore_pairs"] = []
         plan["fixed_fluorophores"] = []
         plan["candidate_fluorophores"] = []
@@ -457,16 +462,25 @@ def apply_ai_plan_to_session_state(plan, app_context):
         st.session_state["mode_radio"] = mode_val
 
     # Source
-    source_val = valid(plan.get("selection_source"), app_context["available_selection_sources"])
+    source_val = valid(
+        plan.get("selection_source"),
+        app_context["available_selection_sources"],
+    )
     if source_val:
         st.session_state["source_radio"] = source_val
 
     # Laser strategy and lasers
-    strategy_val = valid(plan.get("laser_strategy"), app_context["available_laser_strategies"])
+    strategy_val = valid(
+        plan.get("laser_strategy"),
+        app_context["available_laser_strategies"],
+    )
     if strategy_val:
         st.session_state["laser_strategy_radio"] = strategy_val
 
-    spec_val = valid(plan.get("spectral_resolution"), app_context["available_spectral_resolutions"])
+    spec_val = valid(
+        plan.get("spectral_resolution"),
+        app_context["available_spectral_resolutions"],
+    )
     if spec_val:
         st.session_state["spec_res_radio"] = spec_val
 
@@ -484,28 +498,32 @@ def apply_ai_plan_to_session_state(plan, app_context):
         for i, lam in enumerate(clean_lasers, start=1):
             st.session_state[f"laser_{i}"] = int(lam)
 
-    # By probes
+    # By probes: fixed exact probe-fluorophore pairs.
     fixed_pairs = []
 
-for item in plan.get("fixed_probe_fluorophore_pairs") or []:
-    p = item.get("probe")
-    f = item.get("fluorophore")
+    for item in plan.get("fixed_probe_fluorophore_pairs") or []:
+        probe = item.get("probe")
+        fluor = item.get("fluorophore")
 
-    p_list = _dedupe_probe_names([p], app_context)
+        canonical_probe_list = _dedupe_probe_names([probe], app_context)
 
-    if not p_list:
-        continue
+        if not canonical_probe_list:
+            continue
 
-    p = p_list[0]
-    pair = f"{p} – {f}"
+        canonical_probe = canonical_probe_list[0]
+        pair = f"{canonical_probe} – {fluor}"
 
-    if pair in app_context["probe_fluorophore_pairs"]:
-        fixed_pairs.append(pair)
+        if pair in app_context["probe_fluorophore_pairs"]:
+            fixed_pairs.append(pair)
+
+    # Remove duplicate fixed pairs.
+    fixed_pairs = list(dict.fromkeys(fixed_pairs))
 
     if fixed_pairs:
         st.session_state["fixed_probe_pairs"] = fixed_pairs
         st.session_state["source_radio"] = "By probes"
 
+    # By probes: additional probes.
     additional_probes = _dedupe_probe_names(
         plan.get("additional_probes") or [],
         app_context,
@@ -574,7 +592,11 @@ def _submit_ai_input(app_context):
 
     # If result already exists, only treat input as result Q&A when the text
     # does NOT look like a new selection request.
-    if has_result and st.session_state.get("ai_input_mode") == "result_qa" and not is_new_selection:
+    if (
+        has_result
+        and st.session_state.get("ai_input_mode") == "result_qa"
+        and not is_new_selection
+    ):
         try:
             result_context = st.session_state["last_result_context"]
             answer = answer_light_question(user_text, app_context, result_context)
@@ -645,7 +667,7 @@ def render_ai_input_assistant(app_context):
     if answer:
         st.markdown(answer)
 
-    col1, col2 = st.columns([1, 5])
+    col1, _ = st.columns([1, 5])
 
     with col1:
         if st.button("New selection", key="ai_new_selection"):
