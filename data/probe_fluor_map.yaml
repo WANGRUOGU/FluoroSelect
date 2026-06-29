@@ -33,9 +33,6 @@
     - ATTORho12
     - Pacific Orange
 
-- name: "EUB 338"
-  fluors: *EUB338_FL
-
 - name: ACT476
   fluors:
     - AF488
