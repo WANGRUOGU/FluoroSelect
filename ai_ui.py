@@ -29,17 +29,34 @@ def build_ai_app_context(
     """
     Build a compact context for Gemini.
     This contains only allowed probes/fluorophores/settings, not raw spectra.
-    """
-    all_probes = sorted(probe_map.keys())
 
-    probe_to_fluors = {}
+    Probe aliases such as EUB 338 and EUB338 are merged.
+    """
+    alias_to_canonical = _build_probe_alias_maps(probe_map)
+
+    canonical_probe_to_fluors = {}
+
+    for raw_probe, fluor_list in probe_map.items():
+        canonical_probe = alias_to_canonical.get(raw_probe, raw_probe)
+
+        cands = [
+            f for f in fluor_list
+            if isinstance(f, str) and f in dye_db
+        ]
+
+        canonical_probe_to_fluors.setdefault(canonical_probe, set()).update(cands)
+
+    probe_to_fluors = {
+        probe: sorted(fluors)
+        for probe, fluors in canonical_probe_to_fluors.items()
+    }
+
+    all_probes = sorted(probe_to_fluors.keys())
+
     pair_options = []
 
     for probe in all_probes:
-        cands = sorted([f for f in probe_map.get(probe, []) if f in dye_db])
-        probe_to_fluors[probe] = cands
-
-        for fluor in cands:
+        for fluor in probe_to_fluors[probe]:
             pair_options.append(f"{probe} – {fluor}")
 
     return {
@@ -73,16 +90,87 @@ def build_ai_app_context(
         ],
         "probes": all_probes,
         "probe_to_fluorophores": probe_to_fluors,
-        "probe_fluorophore_pairs": pair_options,
+        "probe_fluorophore_pairs": sorted(pair_options),
+        "probe_alias_to_canonical": alias_to_canonical,
         "readout_pool": readout_pool,
         "inventory_pool": inventory_pool,
         "eub338_pool": eub338_pool,
     }
 
-
 def _norm_text(x):
     return re.sub(r"[^a-z0-9]+", "", str(x).lower())
 
+def _choose_canonical_probe_name(names):
+    names = sorted(set(str(x).strip() for x in names if str(x).strip()))
+
+    compact = [
+        x for x in names
+        if _norm_text(x) == str(x).lower()
+    ]
+
+    if compact:
+        return sorted(compact, key=lambda x: (len(x), x.lower()))[0]
+
+    return sorted(names, key=lambda x: (len(x), x.lower()))[0]
+
+
+def _build_probe_alias_maps(probe_map):
+    aliases_by_norm = {}
+
+    for probe in probe_map.keys():
+        key = _norm_text(probe)
+        aliases_by_norm.setdefault(key, []).append(probe)
+
+    canonical_by_norm = {
+        key: _choose_canonical_probe_name(aliases)
+        for key, aliases in aliases_by_norm.items()
+    }
+
+    alias_to_canonical = {}
+
+    for probe in probe_map.keys():
+        key = _norm_text(probe)
+        alias_to_canonical[probe] = canonical_by_norm[key]
+
+    return alias_to_canonical
+
+
+def _dedupe_probe_names(probes, app_context):
+    """
+    Deduplicate probe names by normalized form.
+
+    Example:
+        EUB 338 and EUB338 are treated as the same probe.
+    """
+    alias_to_canonical = app_context.get("probe_alias_to_canonical", {})
+
+    canonical_by_norm = {}
+
+    for probe in app_context.get("probes", []):
+        canonical_by_norm[_norm_text(probe)] = probe
+
+    for alias, canonical in alias_to_canonical.items():
+        canonical_by_norm[_norm_text(alias)] = canonical
+
+    out = []
+    seen = set()
+
+    for probe in probes or []:
+        key = _norm_text(probe)
+
+        if key not in canonical_by_norm:
+            continue
+
+        canonical = canonical_by_norm[key]
+        canonical_key = _norm_text(canonical)
+
+        if canonical_key in seen:
+            continue
+
+        out.append(canonical)
+        seen.add(canonical_key)
+
+    return out
 
 def _find_known_fluors(user_text, fluor_options):
     text_norm = _norm_text(user_text)
@@ -268,7 +356,10 @@ def normalize_ai_plan(plan, user_text, app_context):
     all_probes = app_context.get("probes", [])
 
     found_fluors = _find_known_fluors(user_text, all_fluors)
-    found_probes = _find_known_probes(user_text, all_probes)
+    found_probes = _dedupe_probe_names(
+        _find_known_probes(user_text, all_probes),
+        app_context,
+    )
     requested_n = _extract_number(user_text)
 
     # If the user mentions predicted/lasers, switch to predicted mode.
@@ -396,22 +487,29 @@ def apply_ai_plan_to_session_state(plan, app_context):
     # By probes
     fixed_pairs = []
 
-    for item in plan.get("fixed_probe_fluorophore_pairs") or []:
-        p = item.get("probe")
-        f = item.get("fluorophore")
-        pair = f"{p} – {f}"
+for item in plan.get("fixed_probe_fluorophore_pairs") or []:
+    p = item.get("probe")
+    f = item.get("fluorophore")
 
-        if pair in app_context["probe_fluorophore_pairs"]:
-            fixed_pairs.append(pair)
+    p_list = _dedupe_probe_names([p], app_context)
+
+    if not p_list:
+        continue
+
+    p = p_list[0]
+    pair = f"{p} – {f}"
+
+    if pair in app_context["probe_fluorophore_pairs"]:
+        fixed_pairs.append(pair)
 
     if fixed_pairs:
         st.session_state["fixed_probe_pairs"] = fixed_pairs
         st.session_state["source_radio"] = "By probes"
 
-    additional_probes = [
-        p for p in (plan.get("additional_probes") or [])
-        if p in app_context["probes"]
-    ]
+    additional_probes = _dedupe_probe_names(
+        plan.get("additional_probes") or [],
+        app_context,
+    )
 
     if additional_probes:
         st.session_state["picked_additional_probes"] = additional_probes
