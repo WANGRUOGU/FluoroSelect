@@ -121,10 +121,12 @@ Pool-selection rules:
 By-probes rules:
 - If the user says they want to use specific probes, such as "use EUB338 and ACT476",
   use selection_source = "By probes" and put those probes in additional_probes.
-- In By probes mode, do not choose fluorophores yourself. FluoroSelect optimizer will choose them.
-- If the user explicitly says "fix PROBE with FLUOROPHORE as a probe pair",
-  then use fixed_probe_fluorophore_pairs.
-- If the user gives only probe names and no fluorophore names, do not use fixed_fluorophores.
+- In By probes mode, the user does NOT need to specify fluorophores.
+- In By probes mode, FluoroSelect optimizer will choose one fluorophore for each probe.
+- Do not ask the user to specify fluorophores for each probe.
+- Do not answer with explanatory text. Return JSON only.
+- If the user gives only probe names and no fluorophore names, put the probe names in additional_probes.
+- Only use fixed_probe_fluorophore_pairs when the user explicitly says a specific probe must be fixed with a specific fluorophore as a pair.
 
 Default number rule:
 - If selection_source is "All fluorophores" and the user does not specify a number,
