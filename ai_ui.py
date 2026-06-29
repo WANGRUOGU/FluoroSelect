@@ -189,6 +189,53 @@ def _mentions_probe_usage_without_fluorophore(user_text, found_probes, found_flu
 
     return False
 
+def _looks_like_selection_request(user_text):
+    """
+    Decide whether the user is asking for a new selection rather than asking
+    a question about the current result.
+    """
+    text = user_text.lower().strip()
+
+    selection_keywords = [
+        "use ",
+        "using ",
+        "select ",
+        "choose ",
+        "pick ",
+        "fix ",
+        "fixed ",
+        "with ",
+        "probe",
+        "probes",
+        "fluorophore",
+        "fluorophores",
+        "dye",
+        "dyes",
+    ]
+
+    question_keywords = [
+        "why",
+        "what",
+        "which",
+        "how",
+        "should",
+        "is this",
+        "does this",
+        "explain",
+        "suggest",
+        "risk",
+        "risky",
+    ]
+
+    # Explicit new-selection commands should win.
+    if any(k in text for k in selection_keywords):
+        return True
+
+    # Obvious questions should stay as Q&A.
+    if any(k in text for k in question_keywords):
+        return False
+
+    return False
 
 def normalize_ai_plan(plan, user_text, app_context):
     """
@@ -425,10 +472,11 @@ def _submit_ai_input(app_context):
         return
 
     has_result = "last_result_context" in st.session_state
+    is_new_selection = _looks_like_selection_request(user_text)
 
-    # If result already exists, treat input as result Q&A.
-    # Otherwise, treat input as selection-setting request.
-    if has_result and st.session_state.get("ai_input_mode") == "result_qa":
+    # If result already exists, only treat input as result Q&A when the text
+    # does NOT look like a new selection request.
+    if has_result and st.session_state.get("ai_input_mode") == "result_qa" and not is_new_selection:
         try:
             result_context = st.session_state["last_result_context"]
             answer = answer_light_question(user_text, app_context, result_context)
@@ -440,7 +488,7 @@ def _submit_ai_input(app_context):
 
         return
 
-    # Default: parse selection request and apply to controls
+    # Otherwise parse as a new selection request and apply to controls.
     try:
         plan_raw = parse_user_request(user_text, app_context)
         plan = normalize_ai_plan(plan_raw, user_text, app_context)
@@ -449,6 +497,7 @@ def _submit_ai_input(app_context):
 
         st.session_state["last_ai_plan"] = plan
         st.session_state["ai_input_mode"] = "result_qa"
+        st.session_state["last_ai_answer"] = None
         st.session_state["ai_status_message"] = "Applied AI selection request."
 
     except Exception as exc:
