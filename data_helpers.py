@@ -117,7 +117,7 @@ def apply_mbs_zeroing(E_raw_on_det, laser_strategy, spec_res_mode, laser_list):
     In simultaneous Valm-lab 33-channel mode with lasers [405, 488, 561, 639],
     zero out MBS-blocked detection channels.
     """
-    if spec_res_mode != "33 detection channels (Valm lab)":
+    if spec_res_mode != "9.8 nm":
         return E_raw_on_det
     if laser_strategy != "Simultaneous":
         return E_raw_on_det
