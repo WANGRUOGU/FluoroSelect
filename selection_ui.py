@@ -198,7 +198,23 @@ def render_sidebar_config(wl):
         ("By probes", "From readout pool", "All fluorophores", "EUB338 only"),
         key="source_radio",
     )
-
+similarity_metric = st.sidebar.radio(
+        "Similarity metric",
+        (
+            "Cosine similarity",
+            "Spectral overlap",
+            "Pearson correlation",
+            "Spectral angle similarity",
+        ),
+        index=0,
+        key="similarity_metric_radio",
+        help=(
+            "The optimizer minimizes high pairwise similarity scores. "
+            "Cosine similarity is the default. Spectral overlap compares shared "
+            "area after area normalization. Pearson correlation compares centered "
+            "spectral shape. Spectral angle similarity is a hyperspectral-style score."
+        ),
+    )
     k_show = st.sidebar.slider(
         "Show top-K similarities",
         5,
@@ -214,6 +230,7 @@ def render_sidebar_config(wl):
         "laser_list": laser_list,
         "spec_res_mode": spec_res_mode,
         "source_mode": source_mode,
+        "similarity_metric": similarity_metric,
         "k_show": k_show,
     }
 
