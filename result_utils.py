@@ -3,15 +3,22 @@ import numpy as np
 import streamlit as st
 
 from data_helpers import fluor_from_label
-from utils import cosine_similarity_matrix
+from utils import similarity_matrix
 
 
-def select_worst_group(E_norm, labels, idx_groups, required_count, use_pool):
+def select_worst_group(
+    E_norm,
+    labels,
+    idx_groups,
+    required_count,
+    use_pool,
+    similarity_metric="Cosine similarity",
+):
     """Simple contrast selector: intentionally picks high-similarity candidates."""
     if E_norm.size == 0:
         return []
 
-    S = cosine_similarity_matrix(E_norm)
+    S = similarity_matrix(E_norm, metric=similarity_metric)
     max_sim = np.max(S, axis=1)
 
     if use_pool:
@@ -54,10 +61,18 @@ def select_worst_group_constrained(
     use_pool,
     fixed_fluorophores=None,
     allowed_fluorophores=None,
+    similarity_metric="Cosine similarity",
 ):
     """Worst-group heuristic that mirrors pool constraints where relevant."""
     if not use_pool:
-        return select_worst_group(E_norm, labels, idx_groups, required_count, use_pool)
+        return select_worst_group(
+            E_norm,
+            labels,
+            idx_groups,
+            required_count,
+            use_pool,
+            similarity_metric=similarity_metric,
+        )
 
     fixed_set = set(fixed_fluorophores or [])
     allowed_set = set(allowed_fluorophores or [])
@@ -72,7 +87,7 @@ def select_worst_group_constrained(
     if n_add == 0 or E_norm.size == 0:
         return fixed_idx[:n_total]
 
-    S = cosine_similarity_matrix(E_norm)
+    S = similarity_matrix(E_norm, metric=similarity_metric)
     max_sim = np.max(S, axis=1)
     order = sorted(allowed_idx, key=lambda j: -max_sim[j])
     return fixed_idx + order[:n_add]
@@ -136,6 +151,7 @@ def build_result_context(
     prop_vals,
     acc_vals,
     pair_formatter,
+    similarity_metric="Cosine similarity",
 ):
     return {
         "run_id": run_id,
@@ -144,6 +160,7 @@ def build_result_context(
         "laser_strategy": laser_strategy,
         "lasers": laser_list,
         "spectral_resolution": spec_res_mode,
+        "similarity_metric": similarity_metric,
         "use_pool": use_pool,
         "fixed_probe_fluorophore_pairs": fixed_probe_pairs,
         "fixed_fluorophores": fixed_fluorophores,
