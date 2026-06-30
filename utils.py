@@ -106,6 +106,95 @@ def cosine_similarity_matrix(E):
     np.fill_diagonal(G, 0.0)
     return G
 
+def spectral_overlap_similarity_matrix(E):
+    """
+    Area-normalized spectral overlap among columns of E.
+
+    Each spectrum is first clipped to nonnegative values and normalized
+    to unit area. Similarity is sum(min(p_i, p_j)).
+    Range: 0 to 1. Larger means more overlap.
+    """
+    X = np.maximum(np.asarray(E, dtype=float), 0.0)
+    denom = np.sum(X, axis=0, keepdims=True) + 1e-12
+    P = X / denom
+
+    G = np.minimum(P[:, :, None], P[:, None, :]).sum(axis=0)
+    G = np.nan_to_num(G, nan=0.0, posinf=0.0, neginf=0.0)
+    G = np.clip(G, 0.0, 1.0)
+    np.fill_diagonal(G, 0.0)
+
+    return G
+
+
+def pearson_similarity_matrix(E):
+    """
+    Pearson correlation similarity among columns of E.
+
+    The raw Pearson correlation is mapped from [-1, 1] to [0, 1]
+    so that larger values always mean more similar.
+    """
+    X = np.asarray(E, dtype=float)
+    X = X - np.mean(X, axis=0, keepdims=True)
+
+    norms = np.linalg.norm(X, axis=0) + 1e-12
+    G = (X.T @ X) / np.outer(norms, norms)
+
+    G = (G + 1.0) / 2.0
+    G = np.nan_to_num(G, nan=0.0, posinf=1.0, neginf=0.0)
+    G = np.clip(G, 0.0, 1.0)
+    np.fill_diagonal(G, 0.0)
+
+    return G
+
+
+def spectral_angle_similarity_matrix(E):
+    """
+    Spectral-angle similarity among columns of E.
+
+    This is based on the spectral angle mapper:
+        angle = arccos(cosine)
+
+    We convert angle to a similarity score:
+        similarity = 1 - angle / (pi/2)
+
+    For nonnegative spectra, this gives a score close to [0, 1].
+    Larger means more similar.
+    """
+    C = cosine_similarity_matrix(E)
+    C = np.clip(C, -1.0, 1.0)
+
+    angle = np.arccos(C)
+    G = 1.0 - angle / (np.pi / 2.0)
+
+    G = np.nan_to_num(G, nan=0.0, posinf=1.0, neginf=0.0)
+    G = np.clip(G, 0.0, 1.0)
+    np.fill_diagonal(G, 0.0)
+
+    return G
+
+
+def similarity_matrix(E, metric="Cosine similarity"):
+    """
+    Compute a pairwise similarity/confusability matrix.
+
+    All supported metrics are scaled so that larger values mean
+    more similar and therefore worse for fluorophore separation.
+    """
+    metric = metric or "Cosine similarity"
+
+    if metric == "Cosine similarity":
+        return cosine_similarity_matrix(E)
+
+    if metric == "Spectral overlap":
+        return spectral_overlap_similarity_matrix(E)
+
+    if metric == "Pearson correlation":
+        return pearson_similarity_matrix(E)
+
+    if metric == "Spectral angle similarity":
+        return spectral_angle_similarity_matrix(E)
+
+    raise ValueError(f"Unknown similarity metric: {metric}")
 
 def top_k_pairwise(S, labels_pair, k=10):
     """
@@ -514,6 +603,7 @@ def solve_minimax_layer(
     required_count: int | None = None,
     fixed_indices=None,
     allowed_indices=None,
+    similarity_metric="Cosine similarity",
 ):
     """
     Minimize the maximum pairwise cosine among selected columns.
@@ -526,7 +616,7 @@ def solve_minimax_layer(
     allowed_indices restrict the additional candidates.
     """
     N = E_norm.shape[1]
-    C = cosine_similarity_matrix(E_norm)
+    C = similarity_matrix(E_norm, metric=similarity_metric)
 
     fixed, _, _ = _normalize_fixed_allowed(N, fixed_indices, allowed_indices)
     if required_count is not None and len(fixed) > int(required_count):
@@ -589,6 +679,7 @@ def solve_lexicographic_k(
     required_count: int | None = None,
     fixed_indices=None,
     allowed_indices=None,
+    similarity_metric="Cosine similarity",
 ):
     """
     True lexicographic minimization over pairwise cosines.
@@ -612,7 +703,7 @@ def solve_lexicographic_k(
             f"required_count ({required_count})."
         )
 
-    C = cosine_similarity_matrix(E_norm)
+    C = similarity_matrix(E_norm, metric=similarity_metric)
     pairs = [(i, j) for i in range(N) for j in range(i + 1, N)]
     P = len(pairs)
 
