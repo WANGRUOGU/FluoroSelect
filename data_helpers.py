@@ -101,24 +101,29 @@ def cached_build_effective_with_lasers(wl, dye_db, groups, laser_list, laser_str
 @st.cache_data(show_spinner=False)
 def cached_interpolate_E_on_channels(wl, spectra_cols, chan_centers_nm):
     spectra_cols = np.asarray(spectra_cols, dtype=float)
+
     if spectra_cols.ndim == 1:
         spectra_cols = spectra_cols[:, None]
 
     _, n_cols = spectra_cols.shape
     out = np.zeros((len(chan_centers_nm), n_cols), dtype=float)
+
     for j in range(n_cols):
         y = spectra_cols[:, j]
         out[:, j] = np.interp(chan_centers_nm, wl, y, left=float(y[0]), right=float(y[-1]))
+
     return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def apply_mbs_zeroing(E_raw_on_det, laser_strategy, spec_res_mode, laser_list):
     """
-    In simultaneous Valm-lab 33-channel mode with lasers [405, 488, 561, 639],
+    In simultaneous 9.8 nm detector-channel mode with lasers [405, 488, 561, 639],
     zero out MBS-blocked detection channels.
     """
-    if spec_res_mode != "9.8 nm":
+    # Backward compatibility with the previous UI label.
+    if spec_res_mode not in {"9.8 nm", "33 detection channels (Valm lab)"}:
         return E_raw_on_det
+
     if laser_strategy != "Simultaneous":
         return E_raw_on_det
 
@@ -130,8 +135,9 @@ def apply_mbs_zeroing(E_raw_on_det, laser_strategy, spec_res_mode, laser_list):
 
     blocked = np.array([414, 486, 557, 566, 628, 637, 646], dtype=float)
     mask = np.isin(DETECTION_CHANNELS, blocked)
-
     out = np.array(E_raw_on_det, copy=True)
+
     if out.ndim == 2:
         out[mask, :] = 0.0
+
     return out

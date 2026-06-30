@@ -15,6 +15,7 @@ DEFAULT_MODE = "Emission spectra"
 DEFAULT_LASERS = [488, 561, 639]
 DEFAULT_LASER_STRATEGY = "Simultaneous"
 DEFAULT_SPEC_RESOLUTION = "1 nm"
+DEFAULT_SIMILARITY_METRIC = "Cosine similarity"
 DEFAULT_N_FLUOROPHORES = 4
 
 
@@ -32,10 +33,7 @@ def _choose_canonical_probe_name(names):
     """
     names = sorted(set(str(x).strip() for x in names if str(x).strip()))
 
-    compact = [
-        x for x in names
-        if _norm_text(x) == str(x).lower()
-    ]
+    compact = [x for x in names if _norm_text(x) == str(x).lower()]
 
     if compact:
         return sorted(compact, key=lambda x: (len(x), x.lower()))[0]
@@ -44,9 +42,7 @@ def _choose_canonical_probe_name(names):
 
 
 def _build_probe_alias_maps(probe_map):
-    """
-    Build map from raw probe names to canonical probe names.
-    """
+    """Build map from raw probe names to canonical probe names."""
     aliases_by_norm = {}
 
     for probe in probe_map.keys():
@@ -115,8 +111,8 @@ def build_ai_app_context(
 ):
     """
     Build a compact context for Gemini.
-    This contains only allowed probes/fluorophores/settings, not raw spectra.
 
+    This contains only allowed probes/fluorophores/settings, not raw spectra.
     Probe aliases such as EUB 338 and EUB338 are merged.
     """
     alias_to_canonical = _build_probe_alias_maps(probe_map)
@@ -126,11 +122,7 @@ def build_ai_app_context(
     for raw_probe, fluor_list in probe_map.items():
         canonical_probe = alias_to_canonical.get(raw_probe, raw_probe)
 
-        cands = [
-            f for f in fluor_list
-            if isinstance(f, str) and f in dye_db
-        ]
-
+        cands = [f for f in fluor_list if isinstance(f, str) and f in dye_db]
         canonical_probe_to_fluors.setdefault(canonical_probe, set()).update(cands)
 
     probe_to_fluors = {
@@ -141,23 +133,19 @@ def build_ai_app_context(
     all_probes = sorted(probe_to_fluors.keys())
 
     pair_options = []
-
     for probe in all_probes:
         for fluor in probe_to_fluors[probe]:
             pair_options.append(f"{probe} – {fluor}")
 
     return {
-        "available_modes": [
-            "Emission spectra",
-            "Predicted spectra",
-        ],
-        "available_laser_strategies": [
-            "Simultaneous",
-            "Separate",
-        ],
-        "available_spectral_resolutions": [
-            "1 nm",
-            "9.8 nm",
+        "available_modes": ["Emission spectra", "Predicted spectra"],
+        "available_laser_strategies": ["Simultaneous", "Separate"],
+        "available_spectral_resolutions": ["1 nm", "9.8 nm"],
+        "available_similarity_metrics": [
+            "Cosine similarity",
+            "Spectral overlap",
+            "Pearson correlation",
+            "Spectral angle similarity",
         ],
         "available_selection_sources": [
             "By probes",
@@ -165,16 +153,7 @@ def build_ai_app_context(
             "All fluorophores",
             "EUB338 only",
         ],
-        "available_lasers_common": [
-            405,
-            445,
-            488,
-            514,
-            561,
-            594,
-            633,
-            639,
-        ],
+        "available_lasers_common": [405, 445, 488, 514, 561, 594, 633, 639],
         "probes": all_probes,
         "probe_to_fluorophores": probe_to_fluors,
         "probe_fluorophore_pairs": sorted(pair_options),
@@ -193,8 +172,7 @@ def _find_known_fluors(user_text, fluor_options):
         if _norm_text(fluor) in text_norm:
             found.append(fluor)
 
-    found = sorted(set(found), key=lambda x: (-len(x), x))
-    return found
+    return sorted(set(found), key=lambda x: (-len(x), x))
 
 
 def _find_known_probes(user_text, probe_options):
@@ -205,16 +183,15 @@ def _find_known_probes(user_text, probe_options):
         if _norm_text(probe) in text_norm:
             found.append(probe)
 
-    found = sorted(set(found), key=lambda x: (-len(x), x))
-    return found
+    return sorted(set(found), key=lambda x: (-len(x), x))
 
 
 def _extract_number(user_text):
     """
     Extract a requested count from phrases like:
-    - choose 4 fluorophores
-    - choose another 4 fluorophores
-    - select 5
+        choose 4 fluorophores
+        choose another 4 fluorophores
+        select 5
     """
     text = user_text.lower()
 
@@ -237,7 +214,6 @@ def _extract_number(user_text):
 
 def _mentions_predicted(user_text):
     text = user_text.lower()
-
     return any(
         key in text
         for key in [
@@ -253,9 +229,23 @@ def _mentions_predicted(user_text):
     )
 
 
-def _mentions_fluorophore_selection(user_text):
+def _detect_similarity_metric(user_text):
     text = user_text.lower()
 
+    if "spectral overlap" in text or "overlap" in text:
+        return "Spectral overlap"
+    if "pearson" in text or "correlation" in text or "corr" in text:
+        return "Pearson correlation"
+    if "spectral angle" in text or "angle" in text or "hyperspectral" in text:
+        return "Spectral angle similarity"
+    if "cosine" in text:
+        return "Cosine similarity"
+
+    return None
+
+
+def _mentions_fluorophore_selection(user_text):
+    text = user_text.lower()
     return any(
         key in text
         for key in [
@@ -274,16 +264,7 @@ def _mentions_fluorophore_selection(user_text):
 
 def _mentions_probe_usage_without_fluorophore(user_text, found_probes, found_fluors):
     text = user_text.lower()
-
-    use_words = [
-        "use",
-        "using",
-        "with probes",
-        "probe",
-        "probes",
-        "用",
-        "使用",
-    ]
+    use_words = ["use", "using", "with probes", "probe", "probes", "用", "使用"]
 
     if len(found_probes) >= 1 and not found_fluors:
         return any(w in text for w in use_words)
@@ -292,10 +273,7 @@ def _mentions_probe_usage_without_fluorophore(user_text, found_probes, found_flu
 
 
 def _looks_like_selection_request(user_text):
-    """
-    Decide whether the user is asking for a new selection rather than asking
-    a question about the current result.
-    """
+    """Decide whether user text is a new selection request rather than result Q&A."""
     text = user_text.lower().strip()
 
     selection_keywords = [
@@ -313,6 +291,13 @@ def _looks_like_selection_request(user_text):
         "fluorophores",
         "dye",
         "dyes",
+        "laser",
+        "lasers",
+        "overlap",
+        "cosine",
+        "correlation",
+        "pearson",
+        "angle",
     ]
 
     question_keywords = [
@@ -331,7 +316,6 @@ def _looks_like_selection_request(user_text):
 
     if any(k in text for k in selection_keywords):
         return True
-
     if any(k in text for k in question_keywords):
         return False
 
@@ -339,17 +323,7 @@ def _looks_like_selection_request(user_text):
 
 
 def normalize_ai_plan(plan, user_text, app_context):
-    """
-    Deterministic fallback rules after Gemini parsing.
-
-    This ensures:
-    - default mode = Emission spectra
-    - default lasers = 488/561/639
-    - default pool source = All fluorophores
-    - default fluorophore count = 4
-    - "fix EUB338 with AF514" becomes fixed fluorophore AF514 in All fluorophores mode
-    - "use EUB338 and ACT476" becomes By probes mode
-    """
+    """Deterministic fallback rules after Gemini parsing."""
     plan = dict(plan or {})
 
     if not plan.get("mode"):
@@ -360,6 +334,18 @@ def normalize_ai_plan(plan, user_text, app_context):
 
     if not plan.get("spectral_resolution"):
         plan["spectral_resolution"] = DEFAULT_SPEC_RESOLUTION
+
+    if plan.get("spectral_resolution") == "1 nm (general)":
+        plan["spectral_resolution"] = "1 nm"
+    if plan.get("spectral_resolution") == "33 detection channels (Valm lab)":
+        plan["spectral_resolution"] = "9.8 nm"
+
+    metric_from_text = _detect_similarity_metric(user_text)
+    if metric_from_text:
+        plan["similarity_metric"] = metric_from_text
+
+    if not plan.get("similarity_metric"):
+        plan["similarity_metric"] = DEFAULT_SIMILARITY_METRIC
 
     if not plan.get("lasers"):
         plan["lasers"] = DEFAULT_LASERS[:]
@@ -381,9 +367,7 @@ def normalize_ai_plan(plan, user_text, app_context):
         if not plan.get("lasers"):
             plan["lasers"] = DEFAULT_LASERS[:]
 
-    # Case A:
-    # "use EUB338 and ACT476" means By probes.
-    # FluoroSelect optimizer chooses fluorophores.
+    # Case A: "use EUB338 and ACT476" means By probes.
     if _mentions_probe_usage_without_fluorophore(user_text, found_probes, found_fluors):
         plan["selection_source"] = "By probes"
         plan["additional_probes"] = _dedupe_probe_names(found_probes, app_context)
@@ -393,11 +377,9 @@ def normalize_ai_plan(plan, user_text, app_context):
         plan["n_additional_fluorophores"] = None
         return plan
 
-    # Case B:
-    # Pool fluorophore selection.
+    # Case B: pool fluorophore selection.
     if _mentions_fluorophore_selection(user_text) or requested_n is not None:
         plan["selection_source"] = "All fluorophores"
-
         fixed_fluors = list(plan.get("fixed_fluorophores") or [])
 
         # Convert Gemini fixed pairs into fixed fluorophores for pool mode.
@@ -406,8 +388,6 @@ def normalize_ai_plan(plan, user_text, app_context):
             if fluor in all_fluors and fluor not in fixed_fluors:
                 fixed_fluors.append(fluor)
 
-        # If user explicitly says fix/fixed and mentions a known fluorophore,
-        # treat that fluorophore as fixed.
         for fluor in found_fluors:
             if fluor in all_fluors and fluor not in fixed_fluors:
                 if "fix" in user_text.lower() or "fixed" in user_text.lower():
@@ -426,8 +406,7 @@ def normalize_ai_plan(plan, user_text, app_context):
 
         return plan
 
-    # Case C:
-    # Probe names without fluorophore names.
+    # Case C: probe names without fluorophore names.
     if found_probes and not found_fluors:
         plan["selection_source"] = "By probes"
         plan["additional_probes"] = _dedupe_probe_names(found_probes, app_context)
@@ -448,28 +427,22 @@ def normalize_ai_plan(plan, user_text, app_context):
 
 
 def apply_ai_plan_to_session_state(plan, app_context):
-    """
-    Apply parsed AI plan to Streamlit widget keys.
-    Values are filtered against available options before assignment.
-    """
+    """Apply parsed AI plan to Streamlit widget keys."""
 
     def valid(x, options):
         return x if x in options else None
 
-    # Mode
+    # Mode.
     mode_val = valid(plan.get("mode"), app_context["available_modes"])
     if mode_val:
         st.session_state["mode_radio"] = mode_val
 
-    # Source
-    source_val = valid(
-        plan.get("selection_source"),
-        app_context["available_selection_sources"],
-    )
+    # Source.
+    source_val = valid(plan.get("selection_source"), app_context["available_selection_sources"])
     if source_val:
         st.session_state["source_radio"] = source_val
 
-    # Laser strategy and lasers
+    # Laser strategy.
     strategy_val = valid(
         plan.get("laser_strategy"),
         app_context["available_laser_strategies"],
@@ -477,13 +450,23 @@ def apply_ai_plan_to_session_state(plan, app_context):
     if strategy_val:
         st.session_state["laser_strategy_radio"] = strategy_val
 
-    spec_val = valid(
-        plan.get("spectral_resolution"),
-        app_context["available_spectral_resolutions"],
-    )
+    # Spectral resolution.
+    spec_val = plan.get("spectral_resolution")
+    if spec_val == "1 nm (general)":
+        spec_val = "1 nm"
+    if spec_val == "33 detection channels (Valm lab)":
+        spec_val = "9.8 nm"
+
+    spec_val = valid(spec_val, app_context["available_spectral_resolutions"])
     if spec_val:
         st.session_state["spec_res_radio"] = spec_val
 
+    # Similarity metric.
+    metric_val = valid(plan.get("similarity_metric"), app_context["available_similarity_metrics"])
+    if metric_val:
+        st.session_state["similarity_metric_radio"] = metric_val
+
+    # Lasers.
     lasers = plan.get("lasers") or []
     clean_lasers = []
 
@@ -506,7 +489,6 @@ def apply_ai_plan_to_session_state(plan, app_context):
         fluor = item.get("fluorophore")
 
         canonical_probe_list = _dedupe_probe_names([probe], app_context)
-
         if not canonical_probe_list:
             continue
 
@@ -516,7 +498,6 @@ def apply_ai_plan_to_session_state(plan, app_context):
         if pair in app_context["probe_fluorophore_pairs"]:
             fixed_pairs.append(pair)
 
-    # Remove duplicate fixed pairs.
     fixed_pairs = list(dict.fromkeys(fixed_pairs))
 
     if fixed_pairs:
@@ -524,16 +505,13 @@ def apply_ai_plan_to_session_state(plan, app_context):
         st.session_state["source_radio"] = "By probes"
 
     # By probes: additional probes.
-    additional_probes = _dedupe_probe_names(
-        plan.get("additional_probes") or [],
-        app_context,
-    )
+    additional_probes = _dedupe_probe_names(plan.get("additional_probes") or [], app_context)
 
     if additional_probes:
         st.session_state["picked_additional_probes"] = additional_probes
         st.session_state["source_radio"] = "By probes"
 
-    # Pool modes
+    # Pool modes.
     source_after = st.session_state.get(
         "source_radio",
         source_val or plan.get("selection_source") or "All fluorophores",
@@ -562,10 +540,7 @@ def apply_ai_plan_to_session_state(plan, app_context):
             if f in available_fluors and f not in fixed_fluors
         ]
     else:
-        candidate_fluors = [
-            f for f in available_fluors
-            if f not in fixed_fluors
-        ]
+        candidate_fluors = [f for f in available_fluors if f not in fixed_fluors]
 
     if source_after in ["From readout pool", "All fluorophores", "EUB338 only"]:
         st.session_state[f"fixed_fluorophores_{suffix}"] = fixed_fluors
@@ -612,7 +587,6 @@ def _submit_ai_input(app_context):
     try:
         plan_raw = parse_user_request(user_text, app_context)
         plan = normalize_ai_plan(plan_raw, user_text, app_context)
-
         apply_ai_plan_to_session_state(plan, app_context)
 
         st.session_state["last_ai_plan"] = plan
@@ -628,10 +602,7 @@ def _submit_ai_input(app_context):
 
 
 def render_ai_input_assistant(app_context):
-    """
-    Minimal ChatGPT-like AI box under the main title.
-    Enter submits the text.
-    """
+    """Minimal ChatGPT-like AI box under the main title. Enter submits the text."""
     has_result = "last_result_context" in st.session_state
     mode = st.session_state.get("ai_input_mode", "selection")
 
@@ -641,8 +612,8 @@ def render_ai_input_assistant(app_context):
     else:
         label = "Describe what you want to select"
         placeholder = (
-            "Example: Fix EUB338 with AF488 and choose 4 additional probes "
-            "using predicted spectra with 488, 561, and 639 nm lasers."
+            "Example: Use EUB338 and ACT476 with spectral overlap, or "
+            "fix EUB338 with AF488 and choose 4 fluorophores."
         )
 
     st.text_input(
@@ -663,7 +634,6 @@ def render_ai_input_assistant(app_context):
             st.caption(status)
 
     answer = st.session_state.get("last_ai_answer")
-
     if answer:
         st.markdown(answer)
 
@@ -678,10 +648,7 @@ def render_ai_input_assistant(app_context):
 
 
 def render_ai_result_panel(result_context, app_context):
-    """
-    Compact AI actions below the result.
-    This is optional and concise.
-    """
+    """Compact AI actions below the result."""
     st.session_state["last_result_context"] = result_context
 
     with st.expander("AI suggestions", expanded=False):

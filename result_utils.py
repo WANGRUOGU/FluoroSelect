@@ -1,5 +1,6 @@
 # result_utils.py
 import numpy as np
+import pandas as pd
 import streamlit as st
 
 from data_helpers import fluor_from_label
@@ -29,16 +30,19 @@ def select_worst_group(
 
     worst = []
     used_dyes = set()
+
     for idxs in idx_groups:
         if not idxs:
             continue
 
         best_j = None
         best_score = -1.0
+
         for j in idxs:
             dye = fluor_from_label(labels[j])
             if dye in used_dyes:
                 continue
+
             score = max_sim[j]
             if score > best_score:
                 best_score = score
@@ -90,47 +94,28 @@ def select_worst_group_constrained(
     S = similarity_matrix(E_norm, metric=similarity_metric)
     max_sim = np.max(S, axis=1)
     order = sorted(allowed_idx, key=lambda j: -max_sim[j])
+
     return fixed_idx + order[:n_add]
 
 
 def render_metrics_table(names, rmse_vals, prop_vals, acc_vals):
     """Render a compact 3 x N metrics table."""
+    rows = []
 
-    def esc(x):
-        return str(x).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    for measurement, values in [
+        ("RMSE", rmse_vals),
+        ("Proportion", prop_vals),
+        ("Accuracy", acc_vals),
+    ]:
+        row = {"Measurement": measurement}
+        for name, value in zip(names, values):
+            try:
+                row[name] = f"{float(value):.4f}"
+            except Exception:
+                row[name] = ""
+        rows.append(row)
 
-    def fmt(v):
-        try:
-            v = float(v)
-        except Exception:
-            return esc(v)
-        if not np.isfinite(v):
-            return ""
-        return f"{v:.4f}"
-
-    headers = ["Measurement"] + [esc(n) for n in names]
-    rows = [
-        ["RMSE"] + [fmt(v) for v in rmse_vals],
-        ["Proportion"] + [fmt(v) for v in prop_vals],
-        ["Accuracy"] + [fmt(v) for v in acc_vals],
-    ]
-
-    thead = "".join(f"<th>{h}</th>" for h in headers)
-    trs = []
-    for row in rows:
-        tds = []
-        for j, cell in enumerate(row):
-            align = "left" if j == 0 else "right"
-            tds.append(f'<td style="text-align:{align}; padding:4px 8px;">{cell}</td>')
-        trs.append(f"<tr>{''.join(tds)}</tr>")
-
-    html = f"""
-    <table style="border-collapse:collapse; font-size:0.9rem;">
-        <thead><tr>{thead}</tr></thead>
-        <tbody>{''.join(trs)}</tbody>
-    </table>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 
 def build_result_context(
@@ -170,6 +155,7 @@ def build_result_context(
         "top_pairwise_similarities": [
             {
                 "similarity": float(val),
+                "score": float(val),
                 "label_1": a,
                 "label_2": b,
                 "fluorophore_pair": pair_formatter(a, b),

@@ -3,6 +3,14 @@ import re
 import streamlit as st
 
 
+SIMILARITY_METRICS = (
+    "Cosine similarity",
+    "Spectral overlap",
+    "Pearson correlation",
+    "Spectral angle similarity",
+)
+
+
 def _norm_probe_name(name):
     """Normalize probe names so 'EUB 338', 'EUB-338', and 'EUB338' match."""
     return re.sub(r"[^a-z0-9]+", "", str(name).lower())
@@ -16,11 +24,7 @@ def _choose_canonical_probe_name(names):
     """
     names = sorted(set(str(x).strip() for x in names if str(x).strip()))
 
-    compact = [
-        x for x in names
-        if _norm_probe_name(x) == str(x).lower()
-    ]
-
+    compact = [x for x in names if _norm_probe_name(x) == str(x).lower()]
     if compact:
         return sorted(compact, key=lambda x: (len(x), x.lower()))[0]
 
@@ -33,16 +37,8 @@ def _canonicalize_probe_map(probe_map, dye_db):
 
     Example:
         'EUB 338' and 'EUB338' become one probe, preferably 'EUB338'.
-
-    Returns:
-        canonical_map:
-            canonical probe name -> merged fluorophore list
-
-        alias_to_canonical:
-            original probe name -> canonical probe name
     """
     aliases_by_norm = {}
-
     for probe in probe_map.keys():
         key = _norm_probe_name(probe)
         aliases_by_norm.setdefault(key, []).append(probe)
@@ -60,30 +56,19 @@ def _canonicalize_probe_map(probe_map, dye_db):
         canonical_probe = canonical_by_norm[key]
         alias_to_canonical[raw_probe] = canonical_probe
 
-        cands = [
-            f for f in fluor_list
-            if isinstance(f, str) and f in dye_db
-        ]
-
+        cands = [f for f in fluor_list if isinstance(f, str) and f in dye_db]
         canonical_map.setdefault(canonical_probe, set()).update(cands)
 
-    canonical_map = {
-        probe: sorted(fluors)
-        for probe, fluors in canonical_map.items()
-    }
-
+    canonical_map = {probe: sorted(fluors) for probe, fluors in canonical_map.items()}
     return canonical_map, alias_to_canonical
 
 
 def _canonicalize_probe_value(value, alias_to_canonical):
-    """
-    Convert a probe value to canonical form.
-    """
+    """Convert a probe value to canonical form."""
     if value in alias_to_canonical:
         return alias_to_canonical[value]
 
     value_norm = _norm_probe_name(value)
-
     for alias, canonical in alias_to_canonical.items():
         if _norm_probe_name(alias) == value_norm:
             return canonical
@@ -92,24 +77,18 @@ def _canonicalize_probe_value(value, alias_to_canonical):
 
 
 def _canonicalize_pair_value(pair, alias_to_canonical):
-    """
-    Convert 'Probe – Fluor' to canonical probe name.
-    """
+    """Convert 'Probe – Fluor' to canonical probe name."""
     if " – " not in str(pair):
         return pair
 
     probe, fluor = str(pair).split(" – ", 1)
     probe = _canonicalize_probe_value(probe, alias_to_canonical)
-
     return f"{probe} – {fluor}"
 
 
 def _sanitize_multiselect_state(key, options, value_mapper=None):
     """
     Remove stale/duplicate values from Streamlit multiselect session state.
-
-    This is important because old sessions may still contain both
-    'EUB 338' and 'EUB338'.
     """
     if key not in st.session_state:
         return
@@ -125,13 +104,10 @@ def _sanitize_multiselect_state(key, options, value_mapper=None):
 
     for value in old_values:
         mapped = value_mapper(value) if value_mapper is not None else value
-
         if mapped not in options_set:
             continue
-
         if mapped in seen:
             continue
-
         new_values.append(mapped)
         seen.add(mapped)
 
@@ -168,6 +144,10 @@ def render_sidebar_config(wl):
                 "Spectral resolution",
                 ("1 nm", "9.8 nm"),
                 key="spec_res_radio",
+                help=(
+                    "1 nm uses the full spectral grid. 9.8 nm uses the Valm-lab "
+                    "detector-channel centers."
+                ),
             )
 
         n_lasers = st.sidebar.number_input(
@@ -198,23 +178,20 @@ def render_sidebar_config(wl):
         ("By probes", "From readout pool", "All fluorophores", "EUB338 only"),
         key="source_radio",
     )
-similarity_metric = st.sidebar.radio(
+
+    similarity_metric = st.sidebar.radio(
         "Similarity metric",
-        (
-            "Cosine similarity",
-            "Spectral overlap",
-            "Pearson correlation",
-            "Spectral angle similarity",
-        ),
+        SIMILARITY_METRICS,
         index=0,
         key="similarity_metric_radio",
         help=(
-            "The optimizer minimizes high pairwise similarity scores. "
-            "Cosine similarity is the default. Spectral overlap compares shared "
-            "area after area normalization. Pearson correlation compares centered "
-            "spectral shape. Spectral angle similarity is a hyperspectral-style score."
+            "The optimizer minimizes high pairwise similarity scores. Cosine similarity "
+            "is the default. Spectral overlap compares shared area after area normalization. "
+            "Pearson correlation compares centered spectral shape. Spectral angle similarity "
+            "is a hyperspectral-style score."
         ),
     )
+
     k_show = st.sidebar.slider(
         "Show top-K similarities",
         5,
@@ -252,10 +229,7 @@ def _pool_constraints(source_suffix, pool):
         key=f"fixed_fluorophores_{source_suffix}",
     )
 
-    candidate_options = [
-        f for f in all_available_fluors
-        if f not in fixed_fluorophores
-    ]
+    candidate_options = [f for f in all_available_fluors if f not in fixed_fluorophores]
 
     allowed_fluorophores = st.sidebar.multiselect(
         "Candidate fluorophores for additional selection",
@@ -276,7 +250,6 @@ def _pool_constraints(source_suffix, pool):
 
     default_n = min(4, len(allowed_fluorophores))
     min_n = 0 if fixed_fluorophores else 1
-
     if len(allowed_fluorophores) == 0:
         min_n = 0
 
@@ -290,17 +263,13 @@ def _pool_constraints(source_suffix, pool):
     )
 
     required_count = len(fixed_fluorophores) + int(n_additional)
-
     if required_count == 0:
         st.info(
             "Select at least one fixed fluorophore or choose at least one additional fluorophore."
         )
         st.stop()
 
-    constrained_pool = sorted(
-        set(fixed_fluorophores) | set(allowed_fluorophores)
-    )
-
+    constrained_pool = sorted(set(fixed_fluorophores) | set(allowed_fluorophores))
     if not constrained_pool:
         st.error("No fluorophores are available after applying constraints.")
         st.stop()
@@ -350,11 +319,7 @@ def build_selection_groups(
         return _pool_constraints("eub338", eub338_pool)
 
     # By probes mode: canonicalized fixed exact pairs + additional probes.
-    canonical_probe_map, alias_to_canonical = _canonicalize_probe_map(
-        probe_map,
-        dye_db,
-    )
-
+    canonical_probe_map, alias_to_canonical = _canonicalize_probe_map(probe_map, dye_db)
     all_probes = sorted(canonical_probe_map.keys())
 
     pair_options = []
@@ -363,7 +328,6 @@ def build_selection_groups(
 
     for probe in all_probes:
         cands = canonical_probe_map.get(probe, [])
-
         for fluor in sorted(cands):
             pair = f"{probe} – {fluor}"
             pair_options.append(pair)
@@ -392,17 +356,10 @@ def build_selection_groups(
     )
 
     fixed_probe_names = sorted(
-        {
-            pair_to_probe[pair]
-            for pair in fixed_probe_pairs
-            if pair in pair_to_probe
-        }
+        {pair_to_probe[pair] for pair in fixed_probe_pairs if pair in pair_to_probe}
     )
 
-    remaining_probe_options = [
-        probe for probe in all_probes
-        if probe not in fixed_probe_names
-    ]
+    remaining_probe_options = [probe for probe in all_probes if probe not in fixed_probe_names]
 
     _sanitize_multiselect_state(
         "picked_additional_probes",
@@ -428,16 +385,13 @@ def build_selection_groups(
     for probe in picked_additional:
         canonical_probe = _canonicalize_probe_value(probe, alias_to_canonical)
         key = _norm_probe_name(canonical_probe)
-
         if key in seen_probe_keys:
             continue
-
         if canonical_probe in remaining_probe_options:
             picked_additional_clean.append(canonical_probe)
             seen_probe_keys.add(key)
 
     picked_additional = picked_additional_clean
-
     picked = fixed_probe_names + picked_additional
 
     if not picked:
@@ -451,35 +405,25 @@ def build_selection_groups(
     for pair in fixed_probe_pairs:
         if pair not in pair_to_probe:
             continue
-
         probe = pair_to_probe[pair]
         fluor = pair_to_fluor[pair]
         groups[probe] = [fluor]
 
     for probe in picked_additional:
         cands = canonical_probe_map.get(probe, [])
-
         if cands:
             groups[probe] = cands
 
     # Last safety check: collapse any duplicate normalized probe names.
     safe_groups = {}
-
     for probe, cands in groups.items():
         key = _norm_probe_name(probe)
-
         if key in safe_groups:
             safe_groups[key]["cands"].update(cands)
         else:
-            safe_groups[key] = {
-                "probe": probe,
-                "cands": set(cands),
-            }
+            safe_groups[key] = {"probe": probe, "cands": set(cands)}
 
-    groups = {
-        item["probe"]: sorted(item["cands"])
-        for item in safe_groups.values()
-    }
+    groups = {item["probe"]: sorted(item["cands"]) for item in safe_groups.values()}
 
     if not groups:
         st.error("No valid candidates with spectra in dyes.yaml.")

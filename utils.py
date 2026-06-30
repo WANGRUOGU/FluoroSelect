@@ -3,7 +3,7 @@ import numpy as np
 import pulp
 
 
-# --- CBC solver: no time/gap limits (guarantee optimality), quiet log ---
+# --- CBC solver: no time/gap limits, quiet log ---
 def _make_cbc_exact():
     try:
         return pulp.PULP_CBC_CMD(msg=False, mip=True)
@@ -27,6 +27,7 @@ def load_dyes_yaml(path):
     }
 
     Missing QY will be filled with the mean of available QYs.
+    Missing EC will be filled with 1.0.
     """
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
@@ -39,6 +40,7 @@ def load_dyes_yaml(path):
         ex = np.array(rec.get("excitation", []), dtype=float)
         qy = rec.get("quantum_yield", None)
         ec = rec.get("extinction_coeff", None)
+
         dye_db[name] = dict(
             emission=em,
             excitation=ex,
@@ -46,12 +48,18 @@ def load_dyes_yaml(path):
             extinction_coeff=ec,
         )
 
-    qys = [v["quantum_yield"] for v in dye_db.values() if v.get("quantum_yield") is not None]
+    qys = [
+        v["quantum_yield"]
+        for v in dye_db.values()
+        if v.get("quantum_yield") is not None
+    ]
     mean_qy = float(np.mean(qys)) if len(qys) else 1.0
 
     for v in dye_db.values():
         if v.get("quantum_yield") is None:
             v["quantum_yield"] = mean_qy
+        if v.get("extinction_coeff") is None:
+            v["extinction_coeff"] = 1.0
 
     return wl, dye_db
 
@@ -75,15 +83,20 @@ def load_probe_fluor_map(path):
         return {}
 
     mapping = {}
+
     for it in items:
         if not isinstance(it, dict):
             continue
+
         name = str(it.get("name", "")).strip()
         fls = it.get("fluors", []) or []
+
         if not name:
             continue
+
         if not isinstance(fls, (list, tuple)):
             fls = [str(fls).strip()] if str(fls).strip() else []
+
         mapping[name] = [str(x).strip() for x in fls if str(x).strip()]
 
     return mapping
@@ -92,37 +105,36 @@ def load_probe_fluor_map(path):
 # =================== Linear-algebra helpers ===================
 def _safe_l2norm_cols(E):
     """L2-normalize each column with a numerical guard."""
+    E = np.asarray(E, dtype=float)
     denom = np.linalg.norm(E, axis=0, keepdims=True) + 1e-12
     return E / denom
 
 
 def cosine_similarity_matrix(E):
-    """
-    Cosine similarity among columns of E.
-    Diagonal is set to 0 so it is easy to take pairwise maxima.
-    """
+    """Cosine similarity among columns of E. Diagonal is set to 0."""
+    E = np.asarray(E, dtype=float)
     norms = np.linalg.norm(E, axis=0) + 1e-12
     G = (E.T @ E) / np.outer(norms, norms)
+    G = np.nan_to_num(G, nan=0.0, posinf=1.0, neginf=0.0)
+    G = np.clip(G, -1.0, 1.0)
     np.fill_diagonal(G, 0.0)
     return G
+
 
 def spectral_overlap_similarity_matrix(E):
     """
     Area-normalized spectral overlap among columns of E.
 
-    Each spectrum is first clipped to nonnegative values and normalized
-    to unit area. Similarity is sum(min(p_i, p_j)).
-    Range: 0 to 1. Larger means more overlap.
+    Each spectrum is clipped to nonnegative values and normalized to unit area.
+    Similarity is sum(min(p_i, p_j)). Range: 0 to 1. Larger means more overlap.
     """
     X = np.maximum(np.asarray(E, dtype=float), 0.0)
     denom = np.sum(X, axis=0, keepdims=True) + 1e-12
     P = X / denom
-
     G = np.minimum(P[:, :, None], P[:, None, :]).sum(axis=0)
     G = np.nan_to_num(G, nan=0.0, posinf=0.0, neginf=0.0)
     G = np.clip(G, 0.0, 1.0)
     np.fill_diagonal(G, 0.0)
-
     return G
 
 
@@ -130,20 +142,17 @@ def pearson_similarity_matrix(E):
     """
     Pearson correlation similarity among columns of E.
 
-    The raw Pearson correlation is mapped from [-1, 1] to [0, 1]
-    so that larger values always mean more similar.
+    Raw Pearson correlation is mapped from [-1, 1] to [0, 1], so larger always
+    means more similar/worse.
     """
     X = np.asarray(E, dtype=float)
     X = X - np.mean(X, axis=0, keepdims=True)
-
     norms = np.linalg.norm(X, axis=0) + 1e-12
     G = (X.T @ X) / np.outer(norms, norms)
-
     G = (G + 1.0) / 2.0
     G = np.nan_to_num(G, nan=0.0, posinf=1.0, neginf=0.0)
     G = np.clip(G, 0.0, 1.0)
     np.fill_diagonal(G, 0.0)
-
     return G
 
 
@@ -151,25 +160,16 @@ def spectral_angle_similarity_matrix(E):
     """
     Spectral-angle similarity among columns of E.
 
-    This is based on the spectral angle mapper:
-        angle = arccos(cosine)
-
-    We convert angle to a similarity score:
-        similarity = 1 - angle / (pi/2)
-
-    For nonnegative spectra, this gives a score close to [0, 1].
-    Larger means more similar.
+    angle = arccos(cosine), similarity = 1 - angle / (pi/2).
+    For nonnegative spectra this gives a score in approximately [0, 1].
     """
     C = cosine_similarity_matrix(E)
     C = np.clip(C, -1.0, 1.0)
-
     angle = np.arccos(C)
     G = 1.0 - angle / (np.pi / 2.0)
-
     G = np.nan_to_num(G, nan=0.0, posinf=1.0, neginf=0.0)
     G = np.clip(G, 0.0, 1.0)
     np.fill_diagonal(G, 0.0)
-
     return G
 
 
@@ -177,42 +177,44 @@ def similarity_matrix(E, metric="Cosine similarity"):
     """
     Compute a pairwise similarity/confusability matrix.
 
-    All supported metrics are scaled so that larger values mean
-    more similar and therefore worse for fluorophore separation.
+    All supported metrics are scaled so larger values mean more similar and
+    therefore worse for fluorophore separation.
     """
     metric = metric or "Cosine similarity"
 
     if metric == "Cosine similarity":
         return cosine_similarity_matrix(E)
-
     if metric == "Spectral overlap":
         return spectral_overlap_similarity_matrix(E)
-
     if metric == "Pearson correlation":
         return pearson_similarity_matrix(E)
-
     if metric == "Spectral angle similarity":
         return spectral_angle_similarity_matrix(E)
 
     raise ValueError(f"Unknown similarity metric: {metric}")
 
+
 def top_k_pairwise(S, labels_pair, k=10):
     """
-    Given NxN cosine matrix S, return top-k pairs.
+    Given an NxN similarity matrix S, return top-k pairs.
     Each item: (value, label_i, label_j), sorted descending by value.
     """
+    S = np.asarray(S, dtype=float)
     N = S.shape[0]
     iu = np.triu_indices(N, k=1)
     vals = S[iu]
+
     if vals.size == 0:
         return []
 
     order = np.argsort(-vals)[: min(k, vals.size)]
     out = []
+
     for idx in order:
         i = iu[0][idx]
         j = iu[1][idx]
         out.append((float(vals[idx]), labels_pair[i], labels_pair[j]))
+
     return out
 
 
@@ -232,19 +234,23 @@ def build_emission_only_matrix(wl, dye_db, groups):
 
     for probe, cand_list in groups.items():
         idxs = []
+
         for fluor in cand_list:
             rec = dye_db.get(fluor)
             if rec is None:
                 continue
+
             em = np.array(rec["emission"], dtype=float)
             if em.size != W:
                 continue
+
             m = np.max(em) if np.max(em) > 0 else 1.0
             em_peak = em / m
             cols.append(em_peak)
             labels.append(f"{probe} – {fluor}")
             idxs.append(col_id)
             col_id += 1
+
         if idxs:
             idx_groups.append(idxs)
 
@@ -278,6 +284,7 @@ def _segments_from_lasers(wl, lasers_sorted):
 
 def _interp_at(w, y, x):
     """1D linear interpolation on a discrete grid, clamped."""
+    y = np.asarray(y, dtype=float)
     if x <= w[0]:
         return float(y[0])
     if x >= w[-1]:
@@ -288,16 +295,16 @@ def _interp_at(w, y, x):
 
 
 def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
-    """
-    Calibrate laser powers in Simultaneous mode.
-    """
+    """Calibrate laser powers in simultaneous mode."""
     lam = np.array(sorted(set(float(l) for l in laser_wavelengths)), dtype=float)
     W = len(wl)
+
     if lam.size == 0:
         return [0.0] * 0, 0.0
 
     fluor_names = [s.split(" – ", 1)[1] for s in selection_labels]
     recs = []
+
     for f in fluor_names:
         rec = dye_db.get(f)
         if rec is None:
@@ -331,6 +338,7 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
         return float(ex_l * qy * (ec if ec is not None else 1.0))
 
     seg_has_peak = [False] * len(segs)
+
     for rec in recs:
         em = rec["emission"]
         if em is None or len(em) != W:
@@ -344,13 +352,14 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
 
     peak_segs = [s for s, u in enumerate(seg_has_peak) if u]
     P = np.zeros(len(lam), dtype=float)
+
     if not peak_segs:
         return P.tolist(), 0.0
 
     s0 = peak_segs[0]
     P[s0] = 1.0
-
     B = 0.0
+
     for rec in recs:
         m0 = seg_peak(rec, s0)
         if m0 <= 0:
@@ -369,27 +378,29 @@ def derive_powers_simultaneous(wl, dye_db, selection_labels, laser_wavelengths):
             m_seg = seg_peak(rec, s)
             if m_seg <= 0.0:
                 continue
+
             pre_j = 0.0
             for m_idx in range(s):
                 if P[m_idx] == 0.0:
                     continue
                 k_prev = coef_at(rec, lam[m_idx])
                 pre_j += k_prev * P[m_idx]
+
             k_js = coef_at(rec, lam[s])
             if k_js <= 0.0:
                 continue
+
             c_j = (B / m_seg - pre_j) / k_js
             if c_j > 0.0:
                 cand_c.append(c_j)
+
         P[s] = float(max(0.0, min(cand_c))) if cand_c else 0.0
 
     return P.tolist(), float(B)
 
 
 def derive_powers_separate(wl, dye_db, selection_labels, laser_wavelengths):
-    """
-    Separate-mode calibration.
-    """
+    """Separate-mode laser power calibration."""
     lam = np.array(sorted(laser_wavelengths), dtype=float)
     W = len(wl)
     fls = [s.split(" – ", 1)[1] for s in selection_labels]
@@ -416,11 +427,13 @@ def derive_powers_separate(wl, dye_db, selection_labels, laser_wavelengths):
 
     M = np.array(M, dtype=float)
     P = np.zeros_like(M)
+
     if M.size == 0:
         return [1.0] * 0, 1.0
 
     P[0] = 1.0
     B = float(M[0])
+
     for i in range(1, len(M)):
         P[i] = float(B / M[i]) if M[i] > 0 else 0.0
 
@@ -429,7 +442,7 @@ def derive_powers_separate(wl, dye_db, selection_labels, laser_wavelengths):
 
 def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, powers):
     """
-    Build effective spectra for ALL candidates.
+    Build effective spectra for all candidates.
 
     Returns:
     - E_raw
@@ -441,21 +454,9 @@ def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, pow
     lam = np.array(sorted(laser_wavelengths), dtype=float)
     pw = np.array(powers, dtype=float)
 
-    def _nearest_idx_from_grid_local(wl_, lam_):
-        idx = int(round(lam_ - wl_[0]))
-        if idx < 0:
-            idx = 0
-        if idx >= len(wl_):
-            idx = len(wl_) - 1
-        return idx
-
-    def _segments_from_lasers_local(wl_, lasers_sorted):
-        segs_ = []
-        for i_, l_ in enumerate(lasers_sorted):
-            lo_ = l_
-            hi_ = lasers_sorted[i_ + 1] if i_ + 1 < len(lasers_sorted) else wl_[-1] + 1
-            segs_.append((lo_, hi_))
-        return segs_
+    if pw.size < lam.size:
+        pad = np.ones(lam.size - pw.size, dtype=float)
+        pw = np.concatenate([pw, pad])
 
     cols, labels, idx_groups = [], [], []
     col_id = 0
@@ -467,22 +468,27 @@ def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, pow
                 rec = dye_db.get(fluor)
                 if rec is None:
                     continue
+
                 em = rec["emission"]
                 ex = rec["excitation"]
                 qy = rec["quantum_yield"]
                 ec = rec["extinction_coeff"]
+
                 if em is None or ex is None or len(em) != W or len(ex) != W:
                     continue
+
                 per_laser_blocks = []
                 for i, l in enumerate(lam):
                     k = _interp_at(wl, ex, l) * qy * (ec if ec is not None else 1.0)
                     k *= pw[i]
-                    per_laser_blocks.append(em * k)
+                    per_laser_blocks.append(np.asarray(em, dtype=float) * k)
+
                 eff_concat = np.concatenate(per_laser_blocks, axis=0)
                 cols.append(eff_concat)
                 labels.append(f"{probe} – {fluor}")
                 idxs.append(col_id)
                 col_id += 1
+
             if idxs:
                 idx_groups.append(idxs)
 
@@ -491,39 +497,47 @@ def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, pow
             return Z, Z, [], []
 
         E_raw = np.stack(cols, axis=1)
-        denom = np.linalg.norm(E_raw, axis=0, keepdims=True) + 1e-12
-        E_norm = E_raw / denom
+        E_norm = _safe_l2norm_cols(E_raw)
         return E_raw, E_norm, labels, idx_groups
 
-    # Simultaneous mode: per-segment cumulative coefficient
-    segs = _segments_from_lasers_local(wl, lam)
+    # Simultaneous mode: per-segment cumulative coefficient.
+    segs = _segments_from_lasers(wl, lam)
+
     for probe, cand_list in groups.items():
         idxs = []
         for fluor in cand_list:
             rec = dye_db.get(fluor)
             if rec is None:
                 continue
+
             em = rec["emission"]
             ex = rec["excitation"]
             qy = rec["quantum_yield"]
             ec = rec["extinction_coeff"]
+
             if em is None or ex is None or len(em) != W or len(ex) != W:
                 continue
+
             eff = np.zeros(W, dtype=float)
+
             for i, (lo, hi) in enumerate(segs):
-                loi = _nearest_idx_from_grid_local(wl, lo)
-                hii = _nearest_idx_from_grid_local(wl, hi - 1) + 1
+                loi = _nearest_idx_from_grid(wl, lo)
+                hii = _nearest_idx_from_grid(wl, hi - 1) + 1
                 if loi >= hii:
                     continue
+
                 total_k = 0.0
                 for m in range(i + 1):
                     ex_l = _interp_at(wl, ex, lam[m])
                     total_k += ex_l * qy * (ec if ec is not None else 1.0) * pw[m]
-                eff[loi:hii] += em[loi:hii] * total_k
+
+                eff[loi:hii] += np.asarray(em, dtype=float)[loi:hii] * total_k
+
             cols.append(eff)
             labels.append(f"{probe} – {fluor}")
             idxs.append(col_id)
             col_id += 1
+
         if idxs:
             idx_groups.append(idxs)
 
@@ -532,30 +546,35 @@ def build_effective_with_lasers(wl, dye_db, groups, laser_wavelengths, mode, pow
         return Z, Z, [], []
 
     E_raw = np.stack(cols, axis=1)
-    denom = np.linalg.norm(E_raw, axis=0, keepdims=True) + 1e-12
-    E_norm = E_raw / denom
+    E_norm = _safe_l2norm_cols(E_raw)
     return E_raw, E_norm, labels, idx_groups
 
 
 # =================== Global-unique constraint ===================
-def _unique_dye_constraints(prob, x_vars, labels_pair, groups, fluor_names):
-    """
-    Enforce each fluorophore can be used at most once globally.
-    Works for by-probes mode; not applied in pool mode.
-    """
+def _unique_dye_constraints(prob, x_vars, labels_pair):
+    """Enforce each fluorophore can be used at most once globally."""
     dye_to_cols = {}
-    for j, d in enumerate(fluor_names):
+    for j, label in enumerate(labels_pair):
+        d = label.split(" – ", 1)[1] if " – " in label else label
         dye_to_cols.setdefault(d, []).append(j)
+
     for d, cols in dye_to_cols.items():
-        prob += pulp.lpSum(x_vars[j] for j in cols) <= 1, f"Unique_{d}"
+        if len(cols) > 1:
+            prob += pulp.lpSum(x_vars[j] for j in cols) <= 1, f"Unique_{d}"
 
 
 # =================== Optimization helpers ===================
-def _pick_integral_from_relaxed(x_vars, idx_groups):
-    """Safety: if a MIP solution leaves fractional x, pick argmax within each group."""
+def _pick_integral_from_solution(x_vars, idx_groups=None, required_count=None):
     xvals = np.array([(v.value() or 0.0) for v in x_vars], dtype=float)
+
+    if required_count is not None:
+        chosen = [j for j, v in enumerate(xvals) if v > 0.5]
+        if len(chosen) != int(required_count):
+            chosen = list(np.argsort(-xvals)[: int(required_count)])
+        return [int(j) for j in chosen]
+
     sel = []
-    for idxs in idx_groups:
+    for idxs in idx_groups or []:
         if not idxs:
             continue
         j_local = int(np.argmax(xvals[idxs]))
@@ -567,9 +586,8 @@ def _normalize_fixed_allowed(N, fixed_indices=None, allowed_indices=None):
     """
     Convert fixed/allowed indices to validated sets.
 
-    fixed_indices: selected columns forced to 1.
-    allowed_indices: columns allowed for additional selection.
-    Fixed columns are allowed even if not included in allowed_indices.
+    allowed_indices restricts additional candidates. Fixed columns are allowed
+    even if they are not listed in allowed_indices.
     """
     fixed = {int(j) for j in (fixed_indices or []) if 0 <= int(j) < N}
     allowed = (
@@ -594,6 +612,84 @@ def _add_fixed_allowed_constraints(prob, x, N, fixed_indices=None, allowed_indic
     return fixed, allowed, selectable
 
 
+def _build_selection_model(
+    C,
+    idx_groups,
+    labels_pair,
+    enforce_unique=True,
+    required_count=None,
+    fixed_indices=None,
+    allowed_indices=None,
+    objective_coeffs=None,
+    max_score_bound=None,
+):
+    """Build a binary selection model with linked pair variables."""
+    N = C.shape[0]
+    fixed, allowed, selectable = _normalize_fixed_allowed(N, fixed_indices, allowed_indices)
+
+    if required_count is not None:
+        required_count = int(required_count)
+        if len(fixed) > required_count:
+            raise ValueError(
+                f"Number of fixed fluorophores ({len(fixed)}) cannot exceed "
+                f"required_count ({required_count})."
+            )
+        if len(selectable) < required_count:
+            raise ValueError(
+                "Not enough allowed fluorophores to satisfy the requested panel size."
+            )
+
+    prob = pulp.LpProblem("fluoroselect", pulp.LpMinimize)
+
+    x = [pulp.LpVariable(f"x_{j}", lowBound=0, upBound=1, cat="Binary") for j in range(N)]
+    y = {}
+
+    for i in range(N):
+        for j in range(i + 1, N):
+            y[(i, j)] = pulp.LpVariable(f"y_{i}_{j}", lowBound=0, upBound=1)
+
+    _add_fixed_allowed_constraints(prob, x, N, fixed_indices, allowed_indices)
+
+    if required_count is None:
+        for g, idxs in enumerate(idx_groups):
+            prob += pulp.lpSum(x[j] for j in idxs) == 1, f"OnePerGroup_{g}"
+        if enforce_unique:
+            _unique_dye_constraints(prob, x, labels_pair)
+    else:
+        prob += pulp.lpSum(x) == required_count, "PickN"
+
+    for (i, j), yij in y.items():
+        prob += yij <= x[i]
+        prob += yij <= x[j]
+        prob += yij >= x[i] + x[j] - 1
+        if max_score_bound is not None:
+            prob += float(C[i, j]) * yij <= float(max_score_bound) + 1e-9
+
+    if objective_coeffs is None:
+        t = pulp.LpVariable("t", lowBound=0)
+        for (i, j), yij in y.items():
+            prob += t >= float(C[i, j]) * yij
+        prob += t
+        return prob, x, y, t
+
+    prob += pulp.lpSum(float(objective_coeffs[i, j]) * yij for (i, j), yij in y.items())
+    return prob, x, y, None
+
+
+def _solve_model(prob, x, idx_groups=None, required_count=None):
+    status = prob.solve(_SOLVER)
+    status_name = pulp.LpStatus.get(status, str(status))
+
+    if status_name not in {"Optimal", "Feasible"}:
+        raise ValueError(f"Optimization failed: {status_name}.")
+
+    return _pick_integral_from_solution(
+        x,
+        idx_groups=idx_groups,
+        required_count=required_count,
+    )
+
+
 # =================== Optimization: minimax layer ===================
 def solve_minimax_layer(
     E_norm,
@@ -606,70 +702,32 @@ def solve_minimax_layer(
     similarity_metric="Cosine similarity",
 ):
     """
-    Minimize the maximum pairwise cosine among selected columns.
-
-    Modes:
-    - required_count is None: by-probes mode, pick exactly one per group.
-    - required_count is int: pool mode, pick exactly required_count from the union set.
-
-    In pool mode, fixed_indices are forced into the final selection, and
-    allowed_indices restrict the additional candidates.
+    Minimize the maximum pairwise similarity among selected columns.
     """
     N = E_norm.shape[1]
+    if N == 0:
+        return [], 0.0
+
     C = similarity_matrix(E_norm, metric=similarity_metric)
 
-    fixed, _, _ = _normalize_fixed_allowed(N, fixed_indices, allowed_indices)
-    if required_count is not None and len(fixed) > int(required_count):
-        raise ValueError(
-            f"Number of fixed fluorophores ({len(fixed)}) cannot exceed "
-            f"required_count ({required_count})."
-        )
+    prob, x, _, t = _build_selection_model(
+        C,
+        idx_groups,
+        labels_pair,
+        enforce_unique=enforce_unique,
+        required_count=required_count,
+        fixed_indices=fixed_indices,
+        allowed_indices=allowed_indices,
+        objective_coeffs=None,
+        max_score_bound=None,
+    )
 
-    prob = pulp.LpProblem("minimax", pulp.LpMinimize)
-    x = [pulp.LpVariable(f"x_{j}", lowBound=0, upBound=1, cat="Binary") for j in range(N)]
-    y = {}
-
-    for i in range(N):
-        for j in range(i + 1, N):
-            y[(i, j)] = pulp.LpVariable(f"y_{i}_{j}", lowBound=0, upBound=1)
-
-    t = pulp.LpVariable("t", lowBound=0)
-
-    _add_fixed_allowed_constraints(prob, x, N, fixed_indices, allowed_indices)
-
-    # selection constraints
-    if required_count is None:
-        for g, idxs in enumerate(idx_groups):
-            prob += pulp.lpSum(x[j] for j in idxs) == 1, f"OnePerGroup_{g}"
-        if enforce_unique:
-            fluor_names = [s.split(" – ", 1)[1] for s in labels_pair]
-            _unique_dye_constraints(prob, x, labels_pair, idx_groups, fluor_names)
-    else:
-        prob += pulp.lpSum(x) == int(required_count), "PickN"
-
-    # y linking + t >= C_ij * y_ij
-    for (i, j), yij in y.items():
-        prob += yij <= x[i]
-        prob += yij <= x[j]
-        prob += yij >= x[i] + x[j] - 1
-        prob += t >= float(C[i, j]) * yij
-
-    prob += t
-    _ = prob.solve(_SOLVER)
-
-    if required_count is None:
-        x_star = _pick_integral_from_relaxed(x, idx_groups)
-    else:
-        xv = np.array([(v.value() or 0.0) for v in x])
-        x_star = [j for j in range(N) if xv[j] > 0.5]
-        if len(x_star) != int(required_count):
-            x_star = list(np.argsort(-xv)[: int(required_count)])
-
+    x_star = _solve_model(prob, x, idx_groups=idx_groups, required_count=required_count)
     t_val = float(t.value() or 0.0)
     return x_star, t_val
 
 
-# =================== Optimization: lexicographic ===================
+# =================== Optimization: lexicographic-like ===================
 def solve_lexicographic_k(
     E_norm,
     idx_groups,
@@ -682,118 +740,47 @@ def solve_lexicographic_k(
     similarity_metric="Cosine similarity",
 ):
     """
-    True lexicographic minimization over pairwise cosines.
+    Select fluorophores by first minimizing the worst selected-pair score,
+    then minimizing a top-heavy weighted sum while keeping that worst score fixed.
 
-    Modes:
-    - required_count=None: by-probes mode, one per group plus global unique.
-    - required_count=int: pool mode, select N from the union set.
-
-    Optional pool-mode constraints:
-    - fixed_indices: columns forced into the final selected set.
-    - allowed_indices: columns allowed as additional candidates.
+    This preserves the minimax optimum and reduces secondary high-overlap pairs.
     """
     N = E_norm.shape[1]
     if N == 0:
-        return [], []
-
-    fixed, _, _ = _normalize_fixed_allowed(N, fixed_indices, allowed_indices)
-    if required_count is not None and len(fixed) > int(required_count):
-        raise ValueError(
-            f"Number of fixed fluorophores ({len(fixed)}) cannot exceed "
-            f"required_count ({required_count})."
-        )
+        return [], 0.0
 
     C = similarity_matrix(E_norm, metric=similarity_metric)
-    pairs = [(i, j) for i in range(N) for j in range(i + 1, N)]
-    P = len(pairs)
 
-    if P == 0:
-        if required_count is None:
-            sel = [g[0] for g in idx_groups if g]
-        else:
-            sel = list(range(min(int(required_count), N)))
-        return sel, []
+    sel0, best_t = solve_minimax_layer(
+        E_norm,
+        idx_groups,
+        labels_pair,
+        enforce_unique=enforce_unique,
+        required_count=required_count,
+        fixed_indices=fixed_indices,
+        allowed_indices=allowed_indices,
+        similarity_metric=similarity_metric,
+    )
 
-    K = int(max(1, min(levels, P)))
-    eps = 1e-6
-    best_layers, x_star_last = [], None
+    # Second stage: among all minimax-optimal panels, reduce the remaining high scores.
+    # Power weights emphasize high-overlap pairs without requiring order-statistic variables.
+    power = max(2, int(levels))
+    coeffs = np.power(np.maximum(C, 0.0) + 1e-12, power)
 
-    # single-group view for reading/writing x uniformly
-    single_group = idx_groups if required_count is None else [list(range(N))]
+    try:
+        prob, x, _, _ = _build_selection_model(
+            C,
+            idx_groups,
+            labels_pair,
+            enforce_unique=enforce_unique,
+            required_count=required_count,
+            fixed_indices=fixed_indices,
+            allowed_indices=allowed_indices,
+            objective_coeffs=coeffs,
+            max_score_bound=best_t,
+        )
+        sel = _solve_model(prob, x, idx_groups=idx_groups, required_count=required_count)
+    except Exception:
+        sel = sel0
 
-    for k in range(1, K + 1):
-        prob = pulp.LpProblem(f"lexi_k{k}", pulp.LpMinimize)
-        x = [pulp.LpVariable(f"x_{j}", lowBound=0, upBound=1, cat="Binary") for j in range(N)]
-        y = {
-            (i, j): pulp.LpVariable(f"y_{i}_{j}", lowBound=0, upBound=1)
-            for (i, j) in pairs
-        }
-        z = {(i, j): pulp.LpVariable(f"z_{i}_{j}", lowBound=0) for (i, j) in pairs}
-
-        _add_fixed_allowed_constraints(prob, x, N, fixed_indices, allowed_indices)
-
-        # selection constraints
-        if required_count is None:
-            for g, idxs in enumerate(idx_groups):
-                prob += pulp.lpSum(x[j] for j in idxs) == 1, f"OnePerGroup_{g}"
-            if enforce_unique:
-                fluor_names = [s.split(" – ", 1)[1] for s in labels_pair]
-                _unique_dye_constraints(prob, x, labels_pair, idx_groups, fluor_names)
-        else:
-            prob += pulp.lpSum(x) == int(required_count), "PickN"
-
-        # linking
-        for (i, j) in pairs:
-            yij = y[(i, j)]
-            prob += yij <= x[i]
-            prob += yij <= x[j]
-            prob += yij >= x[i] + x[j] - 1
-
-            cij = float(C[i, j])
-            zij = z[(i, j)]
-            prob += zij <= cij * yij
-            prob += zij >= cij * yij
-
-        # level-1
-        t1 = pulp.LpVariable("t1", lowBound=0)
-        for (i, j) in pairs:
-            prob += t1 >= z[(i, j)]
-        if len(best_layers) > 0:
-            prob += t1 <= float(best_layers[0]) + eps
-
-        # levels 2..k
-        lam, mu = {}, {}
-        if k >= 2:
-            for r in range(2, k + 1):
-                lam[r] = pulp.LpVariable(f"lam{r}", lowBound=0)
-                mu[r] = {
-                    (i, j): pulp.LpVariable(f"mu{r}_{i}_{j}", lowBound=0)
-                    for (i, j) in pairs
-                }
-                for (i, j) in pairs:
-                    prob += mu[r][(i, j)] >= z[(i, j)] - lam[r]
-                if (r - 1) < len(best_layers):
-                    prob += lam[r] <= float(best_layers[r - 1]) + eps
-
-        # objective: current level only
-        if k == 1:
-            prob += t1
-        else:
-            prob += lam[k] + (1.0 / max(1, P)) * pulp.lpSum(mu[k][p] for p in pairs)
-
-        _ = prob.solve(_SOLVER)
-        best_layers.append(float((t1 if k == 1 else lam[k]).value() or 0.0))
-
-        # read current x
-        if required_count is None:
-            x_star_last = _pick_integral_from_relaxed(x, single_group)
-        else:
-            xv = np.array([(v.value() or 0.0) for v in x])
-            x_star_last = [j for j in range(N) if xv[j] > 0.5]
-            if len(x_star_last) != int(required_count):
-                x_star_last = list(np.argsort(-xv)[: int(required_count)])
-
-        if best_layers[-1] <= 1e-8:
-            break
-
-    return x_star_last, best_layers
+    return sel, float(best_t)
