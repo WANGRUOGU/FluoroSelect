@@ -544,7 +544,7 @@ def _run_predicted_mode(
     )
 
     # Choose selection-resolution matrix
-    if spec_res_mode == "33 detection channels (Valm lab)" and laser_strategy == "Simultaneous":
+    if spec_res_mode == "9.8 nm" and laser_strategy == "Simultaneous":
         E_raw_all_33 = cached_interpolate_E_on_channels(
             wl,
             E_raw_all,
@@ -627,7 +627,7 @@ def _run_predicted_mode(
     )
 
     # Final display/simulation resolution
-    if spec_res_mode == "33 detection channels (Valm lab)" and laser_strategy == "Simultaneous":
+    if spec_res_mode == "9.8 nm" and laser_strategy == "Simultaneous":
         E_raw_sel = cached_interpolate_E_on_channels(
             wl,
             E_raw_sel_1nm,
