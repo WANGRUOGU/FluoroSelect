@@ -154,7 +154,7 @@ def render_sidebar_config(wl):
 
     laser_list = []
     laser_strategy = None
-    spec_res_mode = "1 nm (general)"
+    spec_res_mode = "1 nm"
 
     if mode == "Predicted spectra":
         laser_strategy = st.sidebar.radio(
@@ -166,7 +166,7 @@ def render_sidebar_config(wl):
         if laser_strategy == "Simultaneous":
             spec_res_mode = st.sidebar.radio(
                 "Spectral resolution",
-                ("1 nm (general)", "33 detection channels (Valm lab)"),
+                ("1 nm", "9.8 nm"),
                 key="spec_res_radio",
             )
 
