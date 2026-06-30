@@ -14,7 +14,7 @@ from ai_helper import (
 DEFAULT_MODE = "Emission spectra"
 DEFAULT_LASERS = [488, 561, 639]
 DEFAULT_LASER_STRATEGY = "Simultaneous"
-DEFAULT_SPEC_RESOLUTION = "1 nm (general)"
+DEFAULT_SPEC_RESOLUTION = "1 nm"
 DEFAULT_N_FLUOROPHORES = 4
 
 
@@ -156,8 +156,8 @@ def build_ai_app_context(
             "Separate",
         ],
         "available_spectral_resolutions": [
-            "1 nm (general)",
-            "33 detection channels (Valm lab)",
+            "1 nm",
+            "9.8 nm",
         ],
         "available_selection_sources": [
             "By probes",
