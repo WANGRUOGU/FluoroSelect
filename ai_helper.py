@@ -83,7 +83,7 @@ Return only JSON with this schema:
 {{
   "mode": "Emission spectra" or "Predicted spectra" or null,
   "laser_strategy": "Simultaneous" or "Separate" or null,
-  "spectral_resolution": "1 nm (general)" or "33 detection channels (Valm lab)" or null,
+  "spectral_resolution": "1 nm" or "9.8 nm" or null,
   "lasers": [488, 561, 639] or [],
   "selection_source": "By probes" or "From readout pool" or "All fluorophores" or "EUB338 only" or null,
 
@@ -104,7 +104,7 @@ Important interpretation rules:
 - Default mode is "Emission spectra" unless the user explicitly says predicted/effective spectra or mentions laser-based spectra.
 - Default lasers are [488, 561, 639].
 - Default laser_strategy is "Simultaneous".
-- Default spectral_resolution is "1 nm (general)".
+- Default spectral_resolution is "1 nm".
 
 Pool-selection rules:
 - If the user asks to select/choose/pick N fluorophores, use selection_source = "All fluorophores".
