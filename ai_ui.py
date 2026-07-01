@@ -132,6 +132,9 @@ def build_ai_app_context(
     }
 
     all_probes = sorted(probe_to_fluors.keys())
+    all_probe_fluorophores = sorted(
+        {fluor for fluors in probe_to_fluors.values() for fluor in fluors}
+    )
 
     pair_options = []
     for probe in all_probes:
