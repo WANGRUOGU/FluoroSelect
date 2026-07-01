@@ -16,6 +16,7 @@ DEFAULT_LASERS = [488, 561, 639]
 DEFAULT_LASER_STRATEGY = "Simultaneous"
 DEFAULT_SPEC_RESOLUTION = "1 nm"
 DEFAULT_SIMILARITY_METRIC = "Cosine similarity"
+DEFAULT_SOFT_PENALTY_STRENGTH = "Medium"
 DEFAULT_N_FLUOROPHORES = 4
 
 
@@ -147,6 +148,11 @@ def build_ai_app_context(
             "Pearson correlation",
             "Spectral angle similarity",
         ],
+        "available_soft_penalty_strengths": [
+            "Low",
+            "Medium",
+            "High",
+        ],
         "available_selection_sources": [
             "By probes",
             "From readout pool",
@@ -157,6 +163,7 @@ def build_ai_app_context(
         "probes": all_probes,
         "probe_to_fluorophores": probe_to_fluors,
         "probe_fluorophore_pairs": sorted(pair_options),
+        "all_probe_fluorophores": all_probe_fluorophores,
         "probe_alias_to_canonical": alias_to_canonical,
         "readout_pool": readout_pool,
         "inventory_pool": inventory_pool,
@@ -240,6 +247,43 @@ def _detect_similarity_metric(user_text):
         return "Spectral angle similarity"
     if "cosine" in text:
         return "Cosine similarity"
+
+    return None
+
+
+def _mentions_low_priority(user_text):
+    text = user_text.lower()
+    return any(
+        key in text
+        for key in [
+            "avoid",
+            "avoid using",
+            "avoid if possible",
+            "lower priority",
+            "low priority",
+            "deprioritize",
+            "penalize",
+            "soft penalty",
+            "less preferred",
+            "not preferred",
+            "尽量不用",
+            "降低优先级",
+            "低优先级",
+        ]
+    )
+
+
+def _detect_soft_penalty_strength(user_text):
+    text = user_text.lower()
+
+    if any(key in text for key in ["strongly", "strong", "high", "as much as possible"]):
+        return "High"
+
+    if any(key in text for key in ["slightly", "mild", "low", "a little"]):
+        return "Low"
+
+    if _mentions_low_priority(user_text):
+        return "Medium"
 
     return None
 
@@ -347,6 +391,9 @@ def normalize_ai_plan(plan, user_text, app_context):
     if not plan.get("similarity_metric"):
         plan["similarity_metric"] = DEFAULT_SIMILARITY_METRIC
 
+    if not plan.get("soft_penalty_strength"):
+        plan["soft_penalty_strength"] = DEFAULT_SOFT_PENALTY_STRENGTH
+
     if not plan.get("lasers"):
         plan["lasers"] = DEFAULT_LASERS[:]
 
@@ -359,6 +406,20 @@ def normalize_ai_plan(plan, user_text, app_context):
         app_context,
     )
     requested_n = _extract_number(user_text)
+
+    if _mentions_low_priority(user_text) and found_fluors:
+        existing_low_priority = list(plan.get("low_priority_fluorophores") or [])
+
+        for fluor in found_fluors:
+            if fluor not in existing_low_priority:
+                existing_low_priority.append(fluor)
+
+        plan["low_priority_fluorophores"] = existing_low_priority
+        plan["soft_penalty_strength"] = (
+            _detect_soft_penalty_strength(user_text)
+            or plan.get("soft_penalty_strength")
+            or DEFAULT_SOFT_PENALTY_STRENGTH
+        )
 
     if _mentions_predicted(user_text):
         plan["mode"] = "Predicted spectra"
@@ -523,9 +584,26 @@ def apply_ai_plan_to_session_state(plan, app_context):
     elif source_after == "EUB338 only":
         suffix = "eub338"
         available_fluors = app_context["eub338_pool"]
+    elif source_after == "By probes":
+        suffix = "probes"
+        available_fluors = app_context.get("all_probe_fluorophores", [])
     else:
         suffix = "inventory"
         available_fluors = app_context["inventory_pool"]
+
+    low_priority_fluors = [
+        f for f in (plan.get("low_priority_fluorophores") or [])
+        if f in available_fluors
+    ]
+
+    if low_priority_fluors:
+        st.session_state[f"low_priority_fluorophores_{suffix}"] = low_priority_fluors
+
+        strength = plan.get("soft_penalty_strength") or DEFAULT_SOFT_PENALTY_STRENGTH
+        if strength not in app_context.get("available_soft_penalty_strengths", []):
+            strength = DEFAULT_SOFT_PENALTY_STRENGTH
+
+        st.session_state[f"soft_penalty_strength_{suffix}"] = strength
 
     fixed_fluors = [
         f for f in (plan.get("fixed_fluorophores") or [])
@@ -612,7 +690,7 @@ def render_ai_input_assistant(app_context):
     else:
         label = "Describe what you want to select"
         placeholder = (
-            "Example: Use EUB338 and ACT476 with spectral overlap, or "
+            "Example: Use EUB338 and ACT476, avoid AF633 if possible, or "
             "fix EUB338 with AF488 and choose 4 fluorophores."
         )
 

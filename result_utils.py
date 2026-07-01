@@ -137,6 +137,9 @@ def build_result_context(
     acc_vals,
     pair_formatter,
     similarity_metric="Cosine similarity",
+    low_priority_fluorophores=None,
+    soft_penalty_strength="Medium",
+    soft_penalty_weight=0.0,
 ):
     return {
         "run_id": run_id,
@@ -146,6 +149,9 @@ def build_result_context(
         "lasers": laser_list,
         "spectral_resolution": spec_res_mode,
         "similarity_metric": similarity_metric,
+        "low_priority_fluorophores": low_priority_fluorophores or [],
+        "soft_penalty_strength": soft_penalty_strength,
+        "soft_penalty_weight": float(soft_penalty_weight or 0.0),
         "use_pool": use_pool,
         "fixed_probe_fluorophore_pairs": fixed_probe_pairs,
         "fixed_fluorophores": fixed_fluorophores,

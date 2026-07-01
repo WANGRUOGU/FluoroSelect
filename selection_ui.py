@@ -11,6 +11,14 @@ SIMILARITY_METRICS = (
 )
 
 
+SOFT_PENALTY_STRENGTHS = ("Low", "Medium", "High")
+SOFT_PENALTY_WEIGHTS = {
+    "Low": 0.005,
+    "Medium": 0.02,
+    "High": 0.08,
+}
+
+
 def _norm_probe_name(name):
     """Normalize probe names so 'EUB 338', 'EUB-338', and 'EUB338' match."""
     return re.sub(r"[^a-z0-9]+", "", str(name).lower())
@@ -212,6 +220,56 @@ def render_sidebar_config(wl):
     }
 
 
+def _soft_penalty_controls(source_suffix, fluor_options):
+    """Render soft-penalty controls and return selected low-priority dyes."""
+    fluor_options = sorted(set(fluor_options))
+
+    if not fluor_options:
+        return [], "Medium", SOFT_PENALTY_WEIGHTS["Medium"]
+
+    st.sidebar.subheader("Soft penalty")
+
+    _sanitize_multiselect_state(
+        f"low_priority_fluorophores_{source_suffix}",
+        fluor_options,
+    )
+
+    low_priority_fluorophores = st.sidebar.multiselect(
+        "Lower-priority fluorophores",
+        options=fluor_options,
+        default=[],
+        help=(
+            "These fluorophores are not removed. The optimizer will avoid them "
+            "when comparable alternatives exist, but can still select them if needed."
+        ),
+        key=f"low_priority_fluorophores_{source_suffix}",
+    )
+
+    soft_penalty_strength = "Medium"
+
+    if low_priority_fluorophores:
+        soft_penalty_strength = st.sidebar.radio(
+            "Soft penalty strength",
+            SOFT_PENALTY_STRENGTHS,
+            index=1,
+            key=f"soft_penalty_strength_{source_suffix}",
+            help=(
+                "Low mildly avoids lower-priority fluorophores. High avoids them "
+                "more strongly, while still preserving the best worst-pair similarity."
+            ),
+        )
+        st.sidebar.caption(
+            "Soft penalty is applied only after the best worst-pair similarity is fixed."
+        )
+
+    soft_penalty_weight = SOFT_PENALTY_WEIGHTS.get(
+        soft_penalty_strength,
+        SOFT_PENALTY_WEIGHTS["Medium"],
+    )
+
+    return low_priority_fluorophores, soft_penalty_strength, soft_penalty_weight
+
+
 def _pool_constraints(source_suffix, pool):
     """Common sidebar controls for pool-style fluorophore selection."""
     all_available_fluors = sorted(set(pool))
@@ -279,6 +337,10 @@ def _pool_constraints(source_suffix, pool):
         f"+ {int(n_additional)} additional = {required_count}."
     )
 
+    low_priority_fluorophores, soft_penalty_strength, soft_penalty_weight = (
+        _soft_penalty_controls(source_suffix, constrained_pool)
+    )
+
     return {
         "groups": {"Pool": constrained_pool},
         "use_pool": True,
@@ -286,6 +348,9 @@ def _pool_constraints(source_suffix, pool):
         "fixed_fluorophores": fixed_fluorophores,
         "allowed_fluorophores": allowed_fluorophores,
         "fixed_probe_pairs": [],
+        "low_priority_fluorophores": low_priority_fluorophores,
+        "soft_penalty_strength": soft_penalty_strength,
+        "soft_penalty_weight": soft_penalty_weight,
     }
 
 
@@ -429,6 +494,14 @@ def build_selection_groups(
         st.error("No valid candidates with spectra in dyes.yaml.")
         st.stop()
 
+    available_fluors_for_soft_penalty = sorted(
+        {fluor for cands in groups.values() for fluor in cands}
+    )
+
+    low_priority_fluorophores, soft_penalty_strength, soft_penalty_weight = (
+        _soft_penalty_controls("probes", available_fluors_for_soft_penalty)
+    )
+
     return {
         "groups": groups,
         "use_pool": False,
@@ -436,4 +509,7 @@ def build_selection_groups(
         "fixed_fluorophores": [],
         "allowed_fluorophores": [],
         "fixed_probe_pairs": fixed_probe_pairs,
+        "low_priority_fluorophores": low_priority_fluorophores,
+        "soft_penalty_strength": soft_penalty_strength,
+        "soft_penalty_weight": soft_penalty_weight,
     }

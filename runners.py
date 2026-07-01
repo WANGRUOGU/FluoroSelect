@@ -79,6 +79,31 @@ def _constraint_indices(
     return fixed_indices, None
 
 
+def _candidate_penalties(labels, low_priority_fluorophores):
+    """Return one soft-penalty value per candidate label."""
+    low_priority_set = set(low_priority_fluorophores or [])
+
+    if not low_priority_set:
+        return None
+
+    return np.array(
+        [1.0 if fluor_from_label(label) in low_priority_set else 0.0 for label in labels],
+        dtype=float,
+    )
+
+
+def _render_soft_penalty_note(low_priority_fluorophores, soft_penalty_strength):
+    """Show a short note when lower-priority fluorophores are active."""
+    if not low_priority_fluorophores:
+        return
+
+    st.caption(
+        "Soft penalty active: avoiding "
+        + ", ".join(low_priority_fluorophores)
+        + f" when possible; strength = {soft_penalty_strength}."
+    )
+
+
 def _render_selection_tables(use_pool, labels, sel_idx, worst_idx, predicted=False):
     """Render selected and worst-comparison tables."""
     if predicted:
@@ -294,6 +319,9 @@ def run_fluoroselect(
     fixed_fluorophores = constraints["fixed_fluorophores"]
     allowed_fluorophores = constraints["allowed_fluorophores"]
     fixed_probe_pairs = constraints["fixed_probe_pairs"]
+    low_priority_fluorophores = constraints.get("low_priority_fluorophores", [])
+    soft_penalty_strength = constraints.get("soft_penalty_strength", "Medium")
+    soft_penalty_weight = constraints.get("soft_penalty_weight", 0.0)
 
     if mode == "Emission spectra":
         _run_emission_mode(
@@ -312,6 +340,9 @@ def run_fluoroselect(
             fixed_fluorophores=fixed_fluorophores,
             allowed_fluorophores=allowed_fluorophores,
             fixed_probe_pairs=fixed_probe_pairs,
+            low_priority_fluorophores=low_priority_fluorophores,
+            soft_penalty_strength=soft_penalty_strength,
+            soft_penalty_weight=soft_penalty_weight,
             app_context=app_context,
         )
     else:
@@ -331,6 +362,9 @@ def run_fluoroselect(
             fixed_fluorophores=fixed_fluorophores,
             allowed_fluorophores=allowed_fluorophores,
             fixed_probe_pairs=fixed_probe_pairs,
+            low_priority_fluorophores=low_priority_fluorophores,
+            soft_penalty_strength=soft_penalty_strength,
+            soft_penalty_weight=soft_penalty_weight,
             app_context=app_context,
         )
 
@@ -352,6 +386,9 @@ def _run_emission_mode(
     fixed_fluorophores,
     allowed_fluorophores,
     fixed_probe_pairs,
+    low_priority_fluorophores,
+    soft_penalty_strength,
+    soft_penalty_weight,
     app_context,
 ):
     E_norm, labels, idx_groups = build_emission_only_matrix(wl, dye_db, groups)
@@ -368,6 +405,8 @@ def _run_emission_mode(
         fixed_probe_pairs,
     )
 
+    candidate_penalties = _candidate_penalties(labels, low_priority_fluorophores)
+
     try:
         sel_idx, _ = solve_lexicographic_k(
             E_norm,
@@ -379,6 +418,8 @@ def _run_emission_mode(
             fixed_indices=fixed_indices,
             allowed_indices=allowed_indices,
             similarity_metric=similarity_metric,
+            candidate_penalties=candidate_penalties,
+            soft_penalty_weight=soft_penalty_weight,
         )
     except ValueError as exc:
         st.error(str(exc))
@@ -412,6 +453,7 @@ def _run_emission_mode(
         worst_idx=worst_idx,
         predicted=False,
     )
+    _render_soft_penalty_note(low_priority_fluorophores, soft_penalty_strength)
 
     selected_labels = [labels[j] for j in sel_idx]
 
@@ -453,6 +495,9 @@ def _run_emission_mode(
         laser_list=laser_list,
         spec_res_mode=spec_res_mode,
         similarity_metric=similarity_metric,
+        low_priority_fluorophores=low_priority_fluorophores,
+        soft_penalty_strength=soft_penalty_strength,
+        soft_penalty_weight=soft_penalty_weight,
         use_pool=use_pool,
         fixed_probe_pairs=fixed_probe_pairs,
         fixed_fluorophores=fixed_fluorophores,
@@ -486,6 +531,9 @@ def _run_predicted_mode(
     fixed_fluorophores,
     allowed_fluorophores,
     fixed_probe_pairs,
+    low_priority_fluorophores,
+    soft_penalty_strength,
+    soft_penalty_weight,
     app_context,
 ):
     if not laser_list:
@@ -503,6 +551,8 @@ def _run_predicted_mode(
         fixed_probe_pairs,
     )
 
+    candidate_penalties0 = _candidate_penalties(labels0, low_priority_fluorophores)
+
     try:
         sel0, _ = solve_lexicographic_k(
             E0,
@@ -514,6 +564,8 @@ def _run_predicted_mode(
             fixed_indices=fixed_indices0,
             allowed_indices=allowed_indices0,
             similarity_metric=similarity_metric,
+            candidate_penalties=candidate_penalties0,
+            soft_penalty_weight=soft_penalty_weight,
         )
     except ValueError as exc:
         st.error(str(exc))
@@ -576,6 +628,8 @@ def _run_predicted_mode(
         fixed_probe_pairs,
     )
 
+    candidate_penalties_all = _candidate_penalties(labels_all, low_priority_fluorophores)
+
     try:
         sel_idx, _ = solve_lexicographic_k(
             E_norm_for_select,
@@ -587,6 +641,8 @@ def _run_predicted_mode(
             fixed_indices=fixed_indices_all,
             allowed_indices=allowed_indices_all,
             similarity_metric=similarity_metric,
+            candidate_penalties=candidate_penalties_all,
+            soft_penalty_weight=soft_penalty_weight,
         )
     except ValueError as exc:
         st.error(str(exc))
@@ -700,6 +756,8 @@ def _run_predicted_mode(
                 [s.split(" – ", 1)[1] for s in worst_labels],
             )
 
+    _render_soft_penalty_note(low_priority_fluorophores, soft_penalty_strength)
+
     tops = _render_pairwise_table(
         E_norm_sel,
         labels_sel,
@@ -733,6 +791,9 @@ def _run_predicted_mode(
         laser_list=laser_list,
         spec_res_mode=spec_res_mode,
         similarity_metric=similarity_metric,
+        low_priority_fluorophores=low_priority_fluorophores,
+        soft_penalty_strength=soft_penalty_strength,
+        soft_penalty_weight=soft_penalty_weight,
         use_pool=use_pool,
         fixed_probe_pairs=fixed_probe_pairs,
         fixed_fluorophores=fixed_fluorophores,

@@ -621,6 +621,8 @@ def _build_selection_model(
     fixed_indices=None,
     allowed_indices=None,
     objective_coeffs=None,
+    candidate_penalties=None,
+    soft_penalty_weight=0.0,
     max_score_bound=None,
 ):
     """Build a binary selection model with linked pair variables."""
@@ -672,7 +674,24 @@ def _build_selection_model(
         prob += t
         return prob, x, y, t
 
-    prob += pulp.lpSum(float(objective_coeffs[i, j]) * yij for (i, j), yij in y.items())
+    pair_objective = pulp.lpSum(
+        float(objective_coeffs[i, j]) * yij
+        for (i, j), yij in y.items()
+    )
+
+    penalty_objective = 0
+    if candidate_penalties is not None and float(soft_penalty_weight or 0.0) > 0:
+        penalties = np.asarray(candidate_penalties, dtype=float)
+        if penalties.size != N:
+            raise ValueError(
+                "candidate_penalties must have one value per candidate column."
+            )
+        penalty_objective = float(soft_penalty_weight) * pulp.lpSum(
+            float(penalties[j]) * x[j]
+            for j in range(N)
+        )
+
+    prob += pair_objective + penalty_objective
     return prob, x, y, None
 
 
@@ -700,6 +719,8 @@ def solve_minimax_layer(
     fixed_indices=None,
     allowed_indices=None,
     similarity_metric="Cosine similarity",
+    candidate_penalties=None,
+    soft_penalty_weight=0.0,
 ):
     """
     Minimize the maximum pairwise similarity among selected columns.
@@ -738,12 +759,16 @@ def solve_lexicographic_k(
     fixed_indices=None,
     allowed_indices=None,
     similarity_metric="Cosine similarity",
+    candidate_penalties=None,
+    soft_penalty_weight=0.0,
 ):
     """
     Select fluorophores by first minimizing the worst selected-pair score,
     then minimizing a top-heavy weighted sum while keeping that worst score fixed.
 
     This preserves the minimax optimum and reduces secondary high-overlap pairs.
+    If candidate_penalties are provided, lower-priority fluorophores are avoided
+    in the second stage without sacrificing the best worst-pair score.
     """
     N = E_norm.shape[1]
     if N == 0:
@@ -777,6 +802,8 @@ def solve_lexicographic_k(
             fixed_indices=fixed_indices,
             allowed_indices=allowed_indices,
             objective_coeffs=coeffs,
+            candidate_penalties=candidate_penalties,
+            soft_penalty_weight=soft_penalty_weight,
             max_score_bound=best_t,
         )
         sel = _solve_model(prob, x, idx_groups=idx_groups, required_count=required_count)
