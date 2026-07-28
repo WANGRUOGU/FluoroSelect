@@ -54,6 +54,39 @@ def nls_unmix(Timg, E, iters=2000, tol=1e-6):
     return A.reshape(H, W, E.shape[1])
 
 
+def spectral_angle_classify_and_estimate(Timg, E, eps=1e-12):
+    """Classify each pixel by spectral angle, then fit one nonnegative abundance."""
+    H, W, C = Timg.shape
+    E = np.asarray(E, dtype=float)
+    if E.ndim != 2 or E.shape[0] != C:
+        raise ValueError(f"E shape {E.shape} mismatch with Timg channels {C}")
+
+    M = np.asarray(Timg, dtype=float).reshape(-1, C)
+    spectrum_norms = np.linalg.norm(E, axis=0)
+    E_unit = E / np.maximum(spectrum_norms, eps)
+    pixel_norms = np.linalg.norm(M, axis=1)
+    M_unit = M / np.maximum(pixel_norms[:, None], eps)
+    predicted = np.argmax(M_unit @ E_unit, axis=1)
+    abundance = np.zeros(M.shape[0], dtype=float)
+
+    for fluor_idx in range(E.shape[1]):
+        mask = predicted == fluor_idx
+        if not np.any(mask):
+            continue
+        spectrum = E[:, fluor_idx]
+        denominator = float(spectrum @ spectrum)
+        if denominator > eps:
+            abundance[mask] = np.maximum(0.0, M[mask] @ spectrum / denominator)
+
+    abundance[pixel_norms <= eps] = 0.0
+    Ahat = np.zeros((M.shape[0], E.shape[1]), dtype=float)
+    Ahat[np.arange(M.shape[0]), predicted] = abundance
+    max_abundance = float(np.max(Ahat))
+    if max_abundance > 0.0:
+        Ahat /= max_abundance
+    return Ahat.reshape(H, W, E.shape[1]), predicted.reshape(H, W)
+
+
 def colorize_single(A_r, color):
     z = np.clip(A_r, 0, 1); m = float(z.max())
     if m > 0: 
@@ -152,7 +185,8 @@ def _suggest_canvas_size(R, rods_per, target_density=0.22, min_side=160):
 
 def simulate_rods_and_unmix(E, H=None, W=None, rods_per=3, rng=None):
     """
-    Forward: T = Atrue ⊗ E; scale to peak=255; Poisson; NLS unmix.
+    Forward: T = Atrue ⊗ E; scale to peak=50 expected counts; Poisson;
+    spectral-angle classification followed by one-dimensional NNLS abundance fitting.
     Auto-resize canvas so each fluorophore can place 'rods_per' rods if possible.
     """
     rng = np.random.default_rng() if rng is None else rng
@@ -180,7 +214,7 @@ def simulate_rods_and_unmix(E, H=None, W=None, rods_per=3, rng=None):
     for c in range(C):
         Tclean[:, :, c] = np.tensordot(Atrue, E[c, :], axes=([2], [0]))
 
-    peak = 255.0
+    peak = 50.0
     Tmax = float(np.max(Tclean))
     if Tmax <= 0:
         Tnoisy = np.zeros_like(Tclean)
@@ -190,5 +224,5 @@ def simulate_rods_and_unmix(E, H=None, W=None, rods_per=3, rng=None):
         lam = np.clip(lam, 0.0, 1e6)
         Tnoisy = rng.poisson(lam).astype(float) / peak
 
-    Ahat = nls_unmix(Tnoisy, E, iters=1500, tol=1e-6)
-    return Atrue, Ahat
+    Ahat, predicted = spectral_angle_classify_and_estimate(Tnoisy, E)
+    return Atrue, Ahat, predicted

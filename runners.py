@@ -11,7 +11,7 @@ from data_helpers import (
     fluor_from_label,
     sorted_order_by_peak,
 )
-from metrics import compute_prop_and_accuracy
+from metrics import compute_classification_accuracy
 from result_utils import render_metrics_table
 from sim_core import (
     argmax_labelmap,
@@ -199,10 +199,10 @@ def _render_simulation_and_metrics(E_chan, colors, names):
     """
     Run synthetic rod simulation, render unmixing images, and compute metrics.
 
-    Current noise model: the clean image is scaled to peak intensity 255, then
+    Current noise model: the clean image is scaled to peak expected count 50, then
     Poisson shot noise is sampled.
     """
-    Atrue, Ahat = simulate_rods_and_unmix(E_chan, rods_per=3)
+    Atrue, Ahat, predicted_labels = simulate_rods_and_unmix(E_chan, rods_per=3)
 
     col_l, col_r = st.columns(2)
 
@@ -215,20 +215,20 @@ def _render_simulation_and_metrics(E_chan, colors, names):
 
     with col_r:
         st.image(labelmap_rgb, use_container_width=True, clamp=True)
-        st.caption("Unmixing results")
+        st.caption("Spectral-angle classification and abundance estimates")
 
     unmix_bw = [to_uint8_gray(Ahat[:, :, r]) for r in range(Ahat.shape[2])]
 
     st.divider()
 
     show_bw_grid(
-        "Per-fluorophore (Unmixing, grayscale)",
+        "Per-fluorophore abundance estimates (grayscale)",
         unmix_bw,
         names,
         cols_per_row=6,
     )
 
-    prop_vals, acc_vals = compute_prop_and_accuracy(Atrue, Ahat)
+    acc_vals = compute_classification_accuracy(Atrue, predicted_labels)
 
     rmse_vals = [
         float(np.sqrt(np.mean((Ahat[:, :, r] - Atrue[:, :, r]) ** 2)))
@@ -238,20 +238,18 @@ def _render_simulation_and_metrics(E_chan, colors, names):
     metric_header(
         "Per-fluorophore metrics",
         "RMSE: Root-mean-square error of the estimated abundance map for each fluorophore.\n"
-        "Proportion: For each fluorophore, we look at pixels where its true abundance is nonzero "
-        "and compute A_r / sum_k A_k, then average these ratios.\n"
-        "Accuracy: For each fluorophore, among pixels where its true abundance is nonzero, "
-        "accuracy is the fraction of pixels where this fluorophore has the largest estimated abundance.",
+        "Accuracy: Among pixels where a fluorophore is truly present, the percentage "
+        "classified as that fluorophore by spectral-angle classification.",
     )
 
-    render_metrics_table(names, rmse_vals, prop_vals, acc_vals)
+    render_metrics_table(names, rmse_vals, acc_vals)
 
     st.caption(
         "Simulation note: synthetic images are generated under Poisson shot noise "
-        "after scaling the clean image to peak intensity 255."
+        "after scaling the clean image to a peak expected count of 50."
     )
 
-    return rmse_vals, prop_vals, acc_vals
+    return rmse_vals, acc_vals
 
 
 def _make_small_groups(use_pool, selected_labels):
@@ -494,7 +492,7 @@ def _run_emission_mode(
 
     names = [prettify_name(label) for label in selected_labels]
 
-    rmse_vals, prop_vals, acc_vals = _render_simulation_and_metrics(
+    _render_simulation_and_metrics(
         E_chan,
         colors,
         names,

@@ -98,19 +98,22 @@ def select_worst_group_constrained(
     return fixed_idx + order[:n_add]
 
 
-def render_metrics_table(names, rmse_vals, prop_vals, acc_vals):
-    """Render a compact 3 x N metrics table."""
+def render_metrics_table(names, rmse_vals, acc_vals):
+    """Render RMSE and classification accuracy for each fluorophore."""
     rows = []
 
     for measurement, values in [
         ("RMSE", rmse_vals),
-        ("Proportion", prop_vals),
         ("Accuracy", acc_vals),
     ]:
         row = {"Measurement": measurement}
         for name, value in zip(names, values):
             try:
-                row[name] = f"{float(value):.4f}"
+                row[name] = (
+                    f"{100.0 * float(value):.1f}%"
+                    if measurement == "Accuracy"
+                    else f"{float(value):.4f}"
+                )
             except Exception:
                 row[name] = ""
         rows.append(row)
@@ -133,7 +136,6 @@ def build_result_context(
     tops,
     names,
     rmse_vals,
-    prop_vals,
     acc_vals,
     pair_formatter,
     similarity_metric="Cosine similarity",
@@ -171,7 +173,6 @@ def build_result_context(
         "metrics": {
             "names": names,
             "rmse": [float(x) for x in rmse_vals],
-            "proportion": [float(x) for x in prop_vals],
             "accuracy": [float(x) for x in acc_vals],
         },
     }
