@@ -11,13 +11,15 @@ In **Predicted spectra** mode, the sidebar offers four brightness-balance
 settings based on the panel-specific laser-power calibration:
 
 - **Off:** no brightness constraint.
-- **Weak:** brightest-to-dimmest predicted peak brightness must be at most 16x.
-- **Medium:** the ratio must be at most 8x.
-- **Strong:** the ratio must be at most 4x.
+- **Weak:** dimmest relative peak brightness must be at least 0.0625.
+- **Medium:** dimmest relative peak brightness must be at least 0.125.
+- **Strong:** dimmest relative peak brightness must be at least 0.25.
 
-FluoroSelect alternates laser-power calibration and constrained panel selection
-until the panel is stable. A result is displayed only when the final panel,
-after recalibrating laser powers, satisfies the selected brightness limit.
+The brightest member of the current panel is normalized to 1. FluoroSelect then
+alternates laser-power calibration and constrained panel selection for at most
+four iterations, updating that reference after each selected panel. A result is
+displayed only when the final stable panel, after recalibrating laser powers,
+satisfies the selected minimum brightness.
 
 ## Run locally
 

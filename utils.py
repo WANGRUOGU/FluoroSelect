@@ -663,17 +663,19 @@ def _build_selection_model(
         if ratio_limit < 1.0:
             raise ValueError("max_brightness_ratio must be at least 1.")
 
+        # brightness_values are relative to the brightest member of the panel
+        # used for the current laser-power calibration. The fixed-point iteration
+        # in runners.py updates that reference after every selected panel. At
+        # convergence, the brightest selected fluorophore is 1 and every selected
+        # fluorophore must be at least 1 / ratio_limit. This needs only one
+        # candidate constraint rather than all O(N^2) candidate-pair constraints.
+        minimum_relative_brightness = 1.0 / ratio_limit
         for i, value in enumerate(brightness):
-            if not np.isfinite(value) or value <= 0.0:
-                prob += x[i] == 0, f"PositiveBrightness_{i}"
-
-        for i in range(N):
-            for j in range(i + 1, N):
-                low = min(brightness[i], brightness[j])
-                high = max(brightness[i], brightness[j])
-                ratio = np.inf if low <= 0.0 < high else (high / low if low > 0.0 else 1.0)
-                if ratio > ratio_limit + 1e-12:
-                    prob += x[i] + x[j] <= 1, f"BrightnessRatio_{i}_{j}"
+            if (
+                not np.isfinite(value)
+                or value < minimum_relative_brightness - 1e-12
+            ):
+                prob += x[i] == 0, f"MinimumRelativeBrightness_{i}"
 
     if required_count is None:
         for g, idxs in enumerate(idx_groups):
