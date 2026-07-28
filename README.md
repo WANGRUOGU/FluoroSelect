@@ -7,13 +7,12 @@ candidate lists.
 
 ## Brightness balance
 
-In **Predicted spectra** mode, the sidebar offers four brightness-balance
+In **Predicted spectra** mode, the sidebar offers three brightness-balance
 settings based on the panel-specific laser-power calibration:
 
 - **Off:** no brightness constraint.
-- **Weak:** dimmest relative peak brightness must be at least 0.0625.
-- **Medium:** dimmest relative peak brightness must be at least 0.125.
-- **Strong:** dimmest relative peak brightness must be at least 0.25.
+- **Weak:** dimmest relative peak brightness must be at least 0.2.
+- **Strong:** dimmest relative peak brightness must be at least 0.4.
 
 The brightest member of the current panel is normalized to 1. FluoroSelect then
 alternates laser-power calibration and constrained panel selection for at most
