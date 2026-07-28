@@ -584,7 +584,7 @@ def _run_predicted_mode(
     # the original two-round behavior. Enabled constraints iterate to a stable panel.
     current_labels = provisional_labels
     seen_panels = {tuple(current_labels)}
-    max_iterations = 12 if max_brightness_ratio is not None else 1
+    max_iterations = 4 if max_brightness_ratio is not None else 1
     converged = False
     cycle_detected = False
 
@@ -636,7 +636,24 @@ def _run_predicted_mode(
         candidate_penalties_all = _candidate_penalties(
             labels_all, low_priority_fluorophores
         )
-        brightness_values = np.max(np.maximum(E_raw_for_select, 0.0), axis=0)
+        peak_brightness = np.max(np.maximum(E_raw_for_select, 0.0), axis=0)
+        current_label_set = set(current_labels)
+        reference_values = np.array(
+            [
+                peak_brightness[j]
+                for j, label in enumerate(labels_all)
+                if label in current_label_set
+            ],
+            dtype=float,
+        )
+        brightness_reference = (
+            float(np.max(reference_values)) if reference_values.size else 0.0
+        )
+        brightness_values = (
+            peak_brightness / brightness_reference
+            if brightness_reference > 0.0
+            else np.zeros_like(peak_brightness)
+        )
 
         try:
             sel_idx, _ = solve_lexicographic_k(
@@ -760,22 +777,27 @@ def _run_predicted_mode(
 
     if max_brightness_ratio is not None and E_raw_sel.shape[1] > 0:
         selected_brightness = np.max(np.maximum(E_raw_sel, 0.0), axis=0)
-        positive = selected_brightness[selected_brightness > 0.0]
-        actual_brightness_ratio = (
-            float(np.max(positive) / np.min(positive))
-            if positive.size == selected_brightness.size and positive.size > 0
-            else np.inf
+        final_reference = float(np.max(selected_brightness))
+        relative_brightness = (
+            selected_brightness / final_reference
+            if final_reference > 0.0
+            else np.zeros_like(selected_brightness)
         )
-        if actual_brightness_ratio <= max_brightness_ratio + 1e-9:
+        minimum_relative_brightness = 1.0 / max_brightness_ratio
+        actual_minimum = (
+            float(np.min(relative_brightness)) if relative_brightness.size else 0.0
+        )
+        if actual_minimum >= minimum_relative_brightness - 1e-9:
             st.caption(
-                f"Final predicted peak-brightness ratio: "
-                f"{actual_brightness_ratio:.2f}x (limit {max_brightness_ratio:g}x)."
+                f"Final dimmest relative peak brightness: {actual_minimum:.3f} "
+                f"(minimum {minimum_relative_brightness:.3f}; brightest = 1)."
             )
         else:
             st.error(
-                f"After final laser-power recalibration, the selected panel has a "
-                f"{actual_brightness_ratio:.2f}x predicted peak-brightness ratio, "
-                f"above the requested {max_brightness_ratio:g}x limit. No result is "
+                f"After final laser-power recalibration, the dimmest selected "
+                f"fluorophore has relative peak brightness {actual_minimum:.3f}, "
+                f"below the requested minimum {minimum_relative_brightness:.3f} "
+                f"(brightest = 1). No result is "
                 "shown because the requested brightness constraint is not satisfied. "
                 "Try a weaker constraint, different lasers, or a broader candidate set."
             )

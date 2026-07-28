@@ -17,8 +17,8 @@ class BrightnessConstraintTests(unittest.TestCase):
             ]
         )
 
-    def test_pool_selection_respects_brightness_ratio(self):
-        brightness = np.array([1.0, 3.0, 10.0, 12.0])
+    def test_pool_selection_respects_minimum_relative_brightness(self):
+        brightness = np.array([0.05, 0.30, 1.00, 0.80])
 
         selected, _ = solve_lexicographic_k(
             self.spectra,
@@ -30,10 +30,10 @@ class BrightnessConstraintTests(unittest.TestCase):
         )
 
         chosen = brightness[selected]
-        self.assertLessEqual(float(chosen.max() / chosen.min()), 4.0)
+        self.assertGreaterEqual(float(chosen.min()), 0.25)
 
-    def test_probe_assignment_respects_brightness_ratio(self):
-        brightness = np.array([1.0, 8.0, 2.0, 12.0])
+    def test_probe_assignment_respects_minimum_relative_brightness(self):
+        brightness = np.array([0.10, 0.80, 0.30, 1.00])
 
         selected, _ = solve_lexicographic_k(
             self.spectra,
@@ -47,7 +47,7 @@ class BrightnessConstraintTests(unittest.TestCase):
         self.assertEqual(sum(index in {0, 1} for index in selected), 1)
         self.assertEqual(sum(index in {2, 3} for index in selected), 1)
         chosen = brightness[selected]
-        self.assertLessEqual(float(chosen.max() / chosen.min()), 4.0)
+        self.assertGreaterEqual(float(chosen.min()), 0.25)
 
     def test_incompatible_fixed_selections_are_infeasible(self):
         with self.assertRaisesRegex(ValueError, "Optimization failed: Infeasible"):
@@ -57,7 +57,7 @@ class BrightnessConstraintTests(unittest.TestCase):
                 ["A", "B", "C", "D"],
                 required_count=2,
                 fixed_indices=[0, 2],
-                brightness_values=np.array([1.0, 2.0, 10.0, 12.0]),
+                brightness_values=np.array([0.10, 0.80, 0.20, 1.00]),
                 max_brightness_ratio=4.0,
             )
 
@@ -67,7 +67,7 @@ class BrightnessConstraintTests(unittest.TestCase):
             [],
             ["A", "B", "C", "D"],
             required_count=2,
-            brightness_values=np.array([0.0, 2.0, 4.0, 5.0]),
+            brightness_values=np.array([0.0, 0.30, 0.50, 1.00]),
             max_brightness_ratio=4.0,
         )
 

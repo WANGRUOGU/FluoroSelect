@@ -196,11 +196,12 @@ def render_sidebar_config(wl):
             index=0,
             key="brightness_balance_radio",
             help=(
-                "Constrains the peak predicted brightness range after laser-power "
-                "calibration. Off applies no constraint. Weak, Medium, and Strong "
-                "limit the brightest-to-dimmest selected fluorophore ratio to 16x, "
-                "8x, and 4x, respectively. FluoroSelect alternates panel selection "
-                "and laser-power calibration because each depends on the other."
+                "After laser-power calibration, the brightest panel member is set "
+                "to relative brightness 1. Off applies no constraint. Weak, Medium, "
+                "and Strong require every selected fluorophore to have relative peak "
+                "brightness of at least 0.0625, 0.125, and 0.25, respectively. "
+                "FluoroSelect alternates panel selection and laser-power calibration "
+                "for at most four iterations because each depends on the other."
             ),
         )
 
