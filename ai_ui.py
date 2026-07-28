@@ -145,12 +145,7 @@ def build_ai_app_context(
         "available_modes": ["Emission spectra", "Predicted spectra"],
         "available_laser_strategies": ["Simultaneous", "Separate"],
         "available_spectral_resolutions": ["1 nm", "9.8 nm"],
-        "available_similarity_metrics": [
-            "Cosine similarity",
-            "Spectral overlap",
-            "Pearson correlation",
-            "Spectral angle similarity",
-        ],
+        "available_similarity_metrics": ["Cosine similarity"],
         "available_soft_penalty_strengths": [
             "Low",
             "Medium",
@@ -524,11 +519,6 @@ def apply_ai_plan_to_session_state(plan, app_context):
     spec_val = valid(spec_val, app_context["available_spectral_resolutions"])
     if spec_val:
         st.session_state["spec_res_radio"] = spec_val
-
-    # Similarity metric.
-    metric_val = valid(plan.get("similarity_metric"), app_context["available_similarity_metrics"])
-    if metric_val:
-        st.session_state["similarity_metric_radio"] = metric_val
 
     # Lasers.
     lasers = plan.get("lasers") or []

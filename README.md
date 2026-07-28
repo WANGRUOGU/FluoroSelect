@@ -17,9 +17,10 @@ settings based on the panel-specific laser-power calibration:
 
 The brightest member of the current panel is normalized to 1. FluoroSelect then
 alternates laser-power calibration and constrained panel selection for at most
-four iterations, updating that reference after each selected panel. A result is
-displayed only when the final stable panel, after recalibrating laser powers,
-satisfies the selected minimum brightness.
+four iterations, updating that reference after each selected panel. Each newly
+selected panel is immediately recalibrated and accepted as soon as it satisfies
+the selected minimum brightness under its own laser powers; the panel does not
+need to repeat in two consecutive iterations.
 
 ## Run locally
 
