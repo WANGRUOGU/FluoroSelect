@@ -295,6 +295,58 @@ def _make_small_groups(use_pool, selected_labels):
     return small_groups
 
 
+def _calibrated_panel_brightness(
+    *,
+    wl,
+    dye_db,
+    selected_labels,
+    use_pool,
+    laser_list,
+    laser_strategy,
+    spec_res_mode,
+):
+    """Return the panel's self-calibrated minimum relative peak brightness."""
+    if laser_strategy == "Simultaneous":
+        powers, B = derive_powers_simultaneous(
+            wl, dye_db, selected_labels, laser_list
+        )
+    else:
+        powers, B = derive_powers_separate(wl, dye_db, selected_labels, laser_list)
+
+    small_groups = _make_small_groups(use_pool, selected_labels)
+    E_raw, _, _, _ = cached_build_effective_with_lasers(
+        wl,
+        dye_db,
+        small_groups,
+        laser_list,
+        laser_strategy,
+        powers,
+    )
+
+    if spec_res_mode == "9.8 nm" and laser_strategy == "Simultaneous":
+        E_raw = cached_interpolate_E_on_channels(
+            wl,
+            E_raw,
+            DETECTION_CHANNELS,
+        )
+        E_raw = apply_mbs_zeroing(
+            E_raw,
+            laser_strategy,
+            spec_res_mode,
+            laser_list,
+        )
+
+    if E_raw.shape[1] == 0:
+        return 0.0, powers, B
+
+    peak_brightness = np.max(np.maximum(E_raw, 0.0), axis=0)
+    reference = float(np.max(peak_brightness))
+    if reference <= 0.0:
+        return 0.0, powers, B
+
+    return float(np.min(peak_brightness / reference)), powers, B
+
+
 def run_fluoroselect(
     *,
     wl,
@@ -581,12 +633,16 @@ def _run_predicted_mode(
 
     # Alternate panel selection and panel-dependent laser-power calibration.
     # With brightness balancing off, one effective-spectrum reoptimization preserves
-    # the original two-round behavior. Enabled constraints iterate to a stable panel.
+    # the original two-round behavior. When enabled, accept the first newly selected
+    # panel that satisfies the brightness threshold under its own recalibrated powers.
     current_labels = provisional_labels
-    seen_panels = {tuple(current_labels)}
+    seen_panels = {frozenset(current_labels)}
     max_iterations = 4 if max_brightness_ratio is not None else 1
-    converged = False
+    brightness_certified = False
     cycle_detected = False
+    certified_powers = None
+    certified_B = None
+    certified_minimum = None
 
     for iteration_count in range(1, max_iterations + 1):
         if laser_strategy == "Simultaneous":
@@ -675,7 +731,8 @@ def _run_predicted_mode(
             if max_brightness_ratio is not None:
                 st.error(
                     f"No panel satisfies the {brightness_balance.lower()} brightness "
-                    f"constraint ({max_brightness_ratio:g}x maximum ratio) together "
+                    f"constraint (minimum relative brightness "
+                    f"{1.0 / max_brightness_ratio:.3f}) together "
                     f"with the other selection constraints. {exc}"
                 )
             else:
@@ -683,12 +740,33 @@ def _run_predicted_mode(
             st.stop()
 
         next_labels = [labels_all[j] for j in sel_idx]
-        if next_labels == current_labels:
-            converged = True
+
+        if max_brightness_ratio is not None:
+            (
+                next_minimum,
+                next_powers,
+                next_B,
+            ) = _calibrated_panel_brightness(
+                wl=wl,
+                dye_db=dye_db,
+                selected_labels=next_labels,
+                use_pool=use_pool,
+                laser_list=laser_list,
+                laser_strategy=laser_strategy,
+                spec_res_mode=spec_res_mode,
+            )
+            if next_minimum >= 1.0 / max_brightness_ratio - 1e-9:
+                brightness_certified = True
+                certified_powers = next_powers
+                certified_B = next_B
+                certified_minimum = next_minimum
+                current_labels = next_labels
+                break
+        else:
             current_labels = next_labels
             break
 
-        signature = tuple(next_labels)
+        signature = frozenset(next_labels)
         if signature in seen_panels:
             cycle_detected = True
             current_labels = next_labels
@@ -700,25 +778,26 @@ def _run_predicted_mode(
     final_labels = current_labels
 
     if max_brightness_ratio is not None:
-        if not converged:
+        if not brightness_certified:
             reason = (
                 "entered a repeated-panel cycle"
                 if cycle_detected
-                else f"did not stabilize within {max_iterations} iterations"
+                else f"did not produce a feasible panel within {max_iterations} iterations"
             )
             st.error(
                 "The panel–power iteration "
                 + reason
-                + ", so FluoroSelect could not certify the requested brightness "
-                "constraint after recalibrating the lasers. Try a weaker brightness "
+                + ". FluoroSelect could not find a panel that satisfies the requested "
+                "brightness constraint under its own recalibrated laser powers. "
+                "Try a weaker brightness "
                 "balance, different lasers, or a broader candidate set."
             )
             st.stop()
 
         st.caption(
             f"Brightness balance: {brightness_balance} "
-            f"(≤{max_brightness_ratio:g}x); panel–power calibration converged "
-            f"in {iteration_count} iteration(s)."
+            f"(minimum relative brightness {1.0 / max_brightness_ratio:.3f}); "
+            f"certified after {iteration_count} iteration(s)."
         )
 
     worst_idx = select_worst_group_constrained(
@@ -734,8 +813,10 @@ def _run_predicted_mode(
 
     worst_labels = [labels_all[j] for j in worst_idx]
 
-    # Recalibrate powers on final set.
-    if laser_strategy == "Simultaneous":
+    # Reuse the self-calibrated powers that certified the brightness constraint.
+    if certified_powers is not None:
+        powers, B = certified_powers, certified_B
+    elif laser_strategy == "Simultaneous":
         powers, B = derive_powers_simultaneous(wl, dye_db, final_labels, laser_list)
     else:
         powers, B = derive_powers_separate(wl, dye_db, final_labels, laser_list)
@@ -785,7 +866,9 @@ def _run_predicted_mode(
         )
         minimum_relative_brightness = 1.0 / max_brightness_ratio
         actual_minimum = (
-            float(np.min(relative_brightness)) if relative_brightness.size else 0.0
+            certified_minimum
+            if certified_minimum is not None
+            else float(np.min(relative_brightness)) if relative_brightness.size else 0.0
         )
         if actual_minimum >= minimum_relative_brightness - 1e-9:
             st.caption(

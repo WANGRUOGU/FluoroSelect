@@ -3,14 +3,6 @@ import re
 import streamlit as st
 
 
-SIMILARITY_METRICS = (
-    "Cosine similarity",
-    "Spectral overlap",
-    "Pearson correlation",
-    "Spectral angle similarity",
-)
-
-
 SOFT_PENALTY_STRENGTHS = ("Low", "Medium", "High")
 SOFT_PENALTY_WEIGHTS = {
     "Low": 0.005,
@@ -134,6 +126,12 @@ def render_sidebar_config(wl):
     """Render global configuration controls and return the selected state."""
     st.sidebar.header("Configuration")
 
+    source_mode = st.sidebar.radio(
+        "Selection source",
+        ("By probes", "From readout pool", "All fluorophores", "EUB338 only"),
+        key="source_radio",
+    )
+
     mode = st.sidebar.radio(
         "Mode",
         options=("Emission spectra", "Predicted spectra"),
@@ -205,30 +203,11 @@ def render_sidebar_config(wl):
             ),
         )
 
-    source_mode = st.sidebar.radio(
-        "Selection source",
-        ("By probes", "From readout pool", "All fluorophores", "EUB338 only"),
-        key="source_radio",
-    )
-
-    similarity_metric = st.sidebar.radio(
-        "Similarity metric",
-        SIMILARITY_METRICS,
-        index=0,
-        key="similarity_metric_radio",
-        help=(
-            "The optimizer minimizes high pairwise similarity scores. Cosine similarity "
-            "is the default. Spectral overlap compares shared area after area normalization. "
-            "Pearson correlation compares centered spectral shape. Spectral angle similarity "
-            "is a hyperspectral-style score."
-        ),
-    )
-
     k_show = st.sidebar.slider(
         "Show top-K similarities",
         5,
         50,
-        10,
+        5,
         1,
         key="k_show_slider",
     )
@@ -239,7 +218,7 @@ def render_sidebar_config(wl):
         "laser_list": laser_list,
         "spec_res_mode": spec_res_mode,
         "source_mode": source_mode,
-        "similarity_metric": similarity_metric,
+        "similarity_metric": "Cosine similarity",
         "brightness_balance": brightness_balance,
         "max_brightness_ratio": BRIGHTNESS_BALANCE_RATIOS[brightness_balance],
         "k_show": k_show,

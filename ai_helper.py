@@ -93,7 +93,7 @@ Return only JSON with this schema:
   "mode": "Emission spectra" or "Predicted spectra" or null,
   "laser_strategy": "Simultaneous" or "Separate" or null,
   "spectral_resolution": "1 nm" or "9.8 nm" or null,
-  "similarity_metric": "Cosine similarity" or "Spectral overlap" or "Pearson correlation" or "Spectral angle similarity" or null,
+  "similarity_metric": "Cosine similarity" or null,
   "low_priority_fluorophores": ["fluorophore name from context"],
   "soft_penalty_strength": "Low" or "Medium" or "High" or null,
   "lasers": [488, 561, 639] or [],
@@ -117,12 +117,8 @@ Important interpretation rules:
 - Default similarity_metric is "Cosine similarity".
 - Default soft_penalty_strength is "Medium" when low_priority_fluorophores is non-empty.
 
-Similarity metric rules:
-- If the user asks for cosine similarity, use "Cosine similarity".
-- If the user asks for overlap or area overlap, use "Spectral overlap".
-- If the user asks for Pearson, correlation, or shape correlation, use "Pearson correlation".
-- If the user asks for spectral angle, angle, or hyperspectral angle, use "Spectral angle similarity".
-- If the user does not mention a metric, use "Cosine similarity".
+Similarity metric rule:
+- FluoroSelect uses cosine similarity. Always use "Cosine similarity".
 
 Soft-penalty rules:
 - If the user says to avoid a fluorophore if possible, lower its priority, deprioritize it, penalize it, or mark it as less preferred, put that fluorophore in low_priority_fluorophores.
