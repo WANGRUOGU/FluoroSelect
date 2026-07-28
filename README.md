@@ -21,6 +21,14 @@ selected panel is immediately recalibrated and accepted as soon as it satisfies
 the selected minimum brightness under its own laser powers; the panel does not
 need to repeat in two consecutive iterations.
 
+## Simulated classification and abundance estimation
+
+Synthetic images are scaled to a peak expected count of 50 before Poisson sampling.
+Each pixel is classified by spectral angle (cosine similarity), after which its
+abundance is estimated by a one-dimensional nonnegative least-squares fit using
+only the classified fluorophore spectrum. Per-fluorophore results report abundance
+RMSE and classification accuracy.
+
 ## Run locally
 
 ```bash

@@ -202,7 +202,7 @@ def render_sidebar_config(wl):
         brightness_balance = st.sidebar.radio(
             "Brightness balance",
             tuple(BRIGHTNESS_BALANCE_RATIOS),
-            index=0,
+            index=1,
             key="brightness_balance_radio",
             help=(
                 "After laser-power calibration, the brightest panel member is set "
