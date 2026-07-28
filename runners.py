@@ -199,7 +199,7 @@ def _render_simulation_and_metrics(E_chan, colors, names):
     """
     Run synthetic rod simulation, render unmixing images, and compute metrics.
 
-    Current noise model: the clean image is scaled to peak intensity 255, then
+    Current noise model: the clean image is scaled to peak expected count 50, then
     Poisson shot noise is sampled.
     """
     Atrue, Ahat = simulate_rods_and_unmix(E_chan, rods_per=3)
@@ -248,7 +248,7 @@ def _render_simulation_and_metrics(E_chan, colors, names):
 
     st.caption(
         "Simulation note: synthetic images are generated under Poisson shot noise "
-        "after scaling the clean image to peak intensity 255."
+        "after scaling the clean image to a peak expected count of 50."
     )
 
     return rmse_vals, prop_vals, acc_vals

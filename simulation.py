@@ -152,7 +152,7 @@ def _suggest_canvas_size(R, rods_per, target_density=0.22, min_side=160):
 
 def simulate_rods_and_unmix(E, H=None, W=None, rods_per=3, rng=None):
     """
-    Forward: T = Atrue ⊗ E; scale to peak=255; Poisson; NLS unmix.
+    Forward: T = Atrue ⊗ E; scale to peak=50 expected counts; Poisson; NLS unmix.
     Auto-resize canvas so each fluorophore can place 'rods_per' rods if possible.
     """
     rng = np.random.default_rng() if rng is None else rng
@@ -180,7 +180,7 @@ def simulate_rods_and_unmix(E, H=None, W=None, rods_per=3, rng=None):
     for c in range(C):
         Tclean[:, :, c] = np.tensordot(Atrue, E[c, :], axes=([2], [0]))
 
-    peak = 255.0
+    peak = 50.0
     Tmax = float(np.max(Tclean))
     if Tmax <= 0:
         Tnoisy = np.zeros_like(Tclean)
