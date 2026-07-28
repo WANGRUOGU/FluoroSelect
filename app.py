@@ -38,6 +38,7 @@ selection = build_selection_groups(
     readout_pool=readout_pool,
     inventory_pool=inventory_pool,
     eub338_pool=eub338_pool,
+    panel_size=config["panel_size"],
 )
 
 # -------------------- Execute --------------------
@@ -52,6 +53,6 @@ run_fluoroselect(
 
 st.caption(
     "AI-assisted features are optional and are used only for input parsing, "
-    "lightweight Q&A, result explanation, and drafting suggestions. "
+    "and lightweight Q&A. "
     "Optimization results are computed by the FluoroSelect algorithm."
 )

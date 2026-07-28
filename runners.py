@@ -3,7 +3,6 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-from ai_ui import render_ai_result_panel
 from config import DETECTION_CHANNELS
 from data_helpers import (
     apply_mbs_zeroing,
@@ -13,11 +12,7 @@ from data_helpers import (
     sorted_order_by_peak,
 )
 from metrics import compute_prop_and_accuracy
-from result_utils import (
-    build_result_context,
-    render_metrics_table,
-    select_worst_group_constrained,
-)
+from result_utils import render_metrics_table
 from sim_core import (
     argmax_labelmap,
     colorize_composite,
@@ -104,8 +99,8 @@ def _render_soft_penalty_note(low_priority_fluorophores, soft_penalty_strength):
     )
 
 
-def _render_selection_tables(use_pool, labels, sel_idx, worst_idx, predicted=False):
-    """Render selected and worst-comparison tables."""
+def _render_selection_tables(use_pool, labels, sel_idx, predicted=False):
+    """Render the selected-panel table."""
     if predicted:
         title = (
             "Selected fluorophores (with lasers, best)"
@@ -131,17 +126,6 @@ def _render_selection_tables(use_pool, labels, sel_idx, worst_idx, predicted=Fal
             fluors,
         )
 
-        worst_fluors = [fluor_from_label(labels[j]) for j in worst_idx]
-
-        if worst_fluors:
-            st.markdown("**Worst fluorophores (same count)**")
-            html_two_row_table(
-                "Slot",
-                "Fluorophore",
-                [f"Slot {i + 1}" for i in range(len(worst_fluors))],
-                worst_fluors,
-            )
-
     else:
         sel_pairs = [labels[j] for j in sel_idx]
 
@@ -151,17 +135,6 @@ def _render_selection_tables(use_pool, labels, sel_idx, worst_idx, predicted=Fal
             [s.split(" – ", 1)[0] for s in sel_pairs],
             [s.split(" – ", 1)[1] for s in sel_pairs],
         )
-
-        worst_pairs = [labels[j] for j in worst_idx]
-
-        if worst_pairs:
-            st.markdown("**Worst probe–fluorophore pairs (same count)**")
-            html_two_row_table(
-                "Probe",
-                "Fluorophore",
-                [s.split(" – ", 1)[0] for s in worst_pairs],
-                [s.split(" – ", 1)[1] for s in worst_pairs],
-            )
 
 
 def _render_pairwise_table(
@@ -174,7 +147,7 @@ def _render_pairwise_table(
     S = similarity_matrix(E_norm, metric=similarity_metric)
     tops = top_k_pairwise(S, labels, k=k_show)
 
-    st.subheader(f"Top pairwise scores ({similarity_metric})")
+    st.subheader("Top pairwise scores")
 
     html_two_row_table(
         "Pair",
@@ -485,28 +458,12 @@ def _run_emission_mode(
     order, _ = sorted_order_by_peak(labels_sel_tmp, wl, dye_db)
     sel_idx = [sel_idx[i] for i in order]
 
-    worst_idx = select_worst_group_constrained(
-        E_norm,
-        labels,
-        idx_groups,
-        required_count,
-        use_pool,
-        fixed_fluorophores=fixed_fluorophores,
-        allowed_fluorophores=allowed_fluorophores,
-        similarity_metric=similarity_metric,
-    )
-
-    labels_worst_tmp = [labels[j] for j in worst_idx]
-    order_w, _ = sorted_order_by_peak(labels_worst_tmp, wl, dye_db)
-    worst_idx = [worst_idx[i] for i in order_w]
-
     colors = ensure_colors(len(sel_idx))
 
     _render_selection_tables(
         use_pool=use_pool,
         labels=labels,
         sel_idx=sel_idx,
-        worst_idx=worst_idx,
         predicted=False,
     )
     _render_soft_penalty_note(low_priority_fluorophores, soft_penalty_strength)
@@ -542,34 +499,6 @@ def _run_emission_mode(
         colors,
         names,
     )
-
-    result_context = build_result_context(
-        run_id="emission",
-        mode=mode,
-        source_mode=source_mode,
-        laser_strategy=laser_strategy,
-        laser_list=laser_list,
-        spec_res_mode=spec_res_mode,
-        similarity_metric=similarity_metric,
-        low_priority_fluorophores=low_priority_fluorophores,
-        soft_penalty_strength=soft_penalty_strength,
-        soft_penalty_weight=soft_penalty_weight,
-        use_pool=use_pool,
-        fixed_probe_pairs=fixed_probe_pairs,
-        fixed_fluorophores=fixed_fluorophores,
-        allowed_fluorophores=allowed_fluorophores,
-        selected_labels=selected_labels,
-        tops=tops,
-        names=names,
-        rmse_vals=rmse_vals,
-        prop_vals=prop_vals,
-        acc_vals=acc_vals,
-        pair_formatter=pair_only_fluor,
-    )
-
-    render_ai_result_panel(result_context, app_context)
-
-
 def _run_predicted_mode(
     *,
     wl,
@@ -800,19 +729,6 @@ def _run_predicted_mode(
             f"certified after {iteration_count} iteration(s)."
         )
 
-    worst_idx = select_worst_group_constrained(
-        E_norm_for_select,
-        labels_all,
-        idx_all,
-        required_count,
-        use_pool,
-        fixed_fluorophores=fixed_fluorophores,
-        allowed_fluorophores=allowed_fluorophores,
-        similarity_metric=similarity_metric,
-    )
-
-    worst_labels = [labels_all[j] for j in worst_idx]
-
     # Reuse the self-calibrated powers that certified the brightness constraint.
     if certified_powers is not None:
         powers, B = certified_powers, certified_B
@@ -892,10 +808,6 @@ def _run_predicted_mode(
         E_raw_sel = E_raw_sel[:, order]
         E_norm_sel = E_norm_sel[:, order]
 
-    # Sort worst labels for display only.
-    if worst_labels:
-        _, worst_labels = sorted_order_by_peak(worst_labels, wl, dye_db)
-
     colors = ensure_colors(len(labels_sel))
 
     if use_pool:
@@ -909,16 +821,6 @@ def _run_predicted_mode(
             fluors,
         )
 
-        if worst_labels:
-            st.markdown("**Worst fluorophores (same count)**")
-            worst_fluors = [fluor_from_label(s) for s in worst_labels]
-            html_two_row_table(
-                "Slot",
-                "Fluorophore",
-                [f"Slot {i + 1}" for i in range(len(worst_fluors))],
-                worst_fluors,
-            )
-
     else:
         st.subheader("Selected probe–fluorophore pairs (with lasers, best)")
 
@@ -928,15 +830,6 @@ def _run_predicted_mode(
             [s.split(" – ", 1)[0] for s in labels_sel],
             [s.split(" – ", 1)[1] for s in labels_sel],
         )
-
-        if worst_labels:
-            st.markdown("**Worst probe–fluorophore pairs (same count)**")
-            html_two_row_table(
-                "Probe",
-                "Fluorophore",
-                [s.split(" – ", 1)[0] for s in worst_labels],
-                [s.split(" – ", 1)[1] for s in worst_labels],
-            )
 
     _render_soft_penalty_note(low_priority_fluorophores, soft_penalty_strength)
 
@@ -959,34 +852,8 @@ def _run_predicted_mode(
     E_chan = E_raw_sel / (B + 1e-12)
     names = [prettify_name(s) for s in labels_sel]
 
-    rmse_vals, prop_vals, acc_vals = _render_simulation_and_metrics(
+    _render_simulation_and_metrics(
         E_chan,
         colors,
         names,
     )
-
-    result_context = build_result_context(
-        run_id="predicted",
-        mode=mode,
-        source_mode=source_mode,
-        laser_strategy=laser_strategy,
-        laser_list=laser_list,
-        spec_res_mode=spec_res_mode,
-        similarity_metric=similarity_metric,
-        low_priority_fluorophores=low_priority_fluorophores,
-        soft_penalty_strength=soft_penalty_strength,
-        soft_penalty_weight=soft_penalty_weight,
-        use_pool=use_pool,
-        fixed_probe_pairs=fixed_probe_pairs,
-        fixed_fluorophores=fixed_fluorophores,
-        allowed_fluorophores=allowed_fluorophores,
-        selected_labels=labels_sel,
-        tops=tops,
-        names=names,
-        rmse_vals=rmse_vals,
-        prop_vals=prop_vals,
-        acc_vals=acc_vals,
-        pair_formatter=pair_only_fluor,
-    )
-
-    render_ai_result_panel(result_context, app_context)

@@ -13,9 +13,8 @@ SOFT_PENALTY_WEIGHTS = {
 
 BRIGHTNESS_BALANCE_RATIOS = {
     "Off": None,
-    "Weak": 16.0,
-    "Medium": 8.0,
-    "Strong": 4.0,
+    "Weak": 5.0,
+    "Strong": 2.5,
 }
 
 
@@ -132,6 +131,18 @@ def render_sidebar_config(wl):
         key="source_radio",
     )
 
+    panel_size = None
+    if source_mode != "By probes":
+        panel_size = st.sidebar.number_input(
+            "Number of fluorophores",
+            min_value=1,
+            max_value=100,
+            value=5,
+            step=1,
+            key=f"panel_size_{source_mode}",
+            help="Total number of fluorophores in the selected panel.",
+        )
+
     mode = st.sidebar.radio(
         "Mode",
         options=("Emission spectra", "Predicted spectra"),
@@ -195,9 +206,9 @@ def render_sidebar_config(wl):
             key="brightness_balance_radio",
             help=(
                 "After laser-power calibration, the brightest panel member is set "
-                "to relative brightness 1. Off applies no constraint. Weak, Medium, "
-                "and Strong require every selected fluorophore to have relative peak "
-                "brightness of at least 0.0625, 0.125, and 0.25, respectively. "
+                "to relative brightness 1. Off applies no constraint. Weak and Strong "
+                "require the dimmest selected fluorophore to have relative peak "
+                "brightness of at least 0.2 and 0.4, respectively. "
                 "FluoroSelect alternates panel selection and laser-power calibration "
                 "for at most four iterations because each depends on the other."
             ),
@@ -218,6 +229,7 @@ def render_sidebar_config(wl):
         "laser_list": laser_list,
         "spec_res_mode": spec_res_mode,
         "source_mode": source_mode,
+        "panel_size": int(panel_size) if panel_size is not None else None,
         "similarity_metric": "Cosine similarity",
         "brightness_balance": brightness_balance,
         "max_brightness_ratio": BRIGHTNESS_BALANCE_RATIOS[brightness_balance],
@@ -275,7 +287,7 @@ def _soft_penalty_controls(source_suffix, fluor_options):
     return low_priority_fluorophores, soft_penalty_strength, soft_penalty_weight
 
 
-def _pool_constraints(source_suffix, pool):
+def _pool_constraints(source_suffix, pool, panel_size):
     """Common sidebar controls for pool-style fluorophore selection."""
     all_available_fluors = sorted(set(pool))
 
@@ -305,30 +317,18 @@ def _pool_constraints(source_suffix, pool):
         key=f"allowed_fluorophores_{source_suffix}",
     )
 
-    label_n = (
-        "How many additional fluorophores to choose"
-        if fixed_fluorophores
-        else "How many fluorophores to choose"
-    )
-
-    default_n = min(4, len(allowed_fluorophores))
-    min_n = 0 if fixed_fluorophores else 1
-    if len(allowed_fluorophores) == 0:
-        min_n = 0
-
-    n_additional = st.sidebar.number_input(
-        label_n,
-        min_value=min_n,
-        max_value=len(allowed_fluorophores),
-        value=max(min_n, default_n),
-        step=1,
-        key=f"n_additional_{source_suffix}",
-    )
-
-    required_count = len(fixed_fluorophores) + int(n_additional)
-    if required_count == 0:
-        st.info(
-            "Select at least one fixed fluorophore or choose at least one additional fluorophore."
+    required_count = int(panel_size)
+    n_additional = required_count - len(fixed_fluorophores)
+    if n_additional < 0:
+        st.error(
+            f"Panel size is {required_count}, but {len(fixed_fluorophores)} "
+            "fluorophores are fixed. Increase the panel size or remove fixed selections."
+        )
+        st.stop()
+    if n_additional > len(allowed_fluorophores):
+        st.error(
+            f"Panel size {required_count} requires {n_additional} additional "
+            f"fluorophores, but only {len(allowed_fluorophores)} candidates are allowed."
         )
         st.stop()
 
@@ -338,8 +338,8 @@ def _pool_constraints(source_suffix, pool):
         st.stop()
 
     st.sidebar.caption(
-        f"Final panel size = {len(fixed_fluorophores)} fixed "
-        f"+ {int(n_additional)} additional = {required_count}."
+        f"Final panel size = {required_count}: {len(fixed_fluorophores)} fixed "
+        f"+ {n_additional} selected by the optimizer."
     )
 
     low_priority_fluorophores, soft_penalty_strength, soft_penalty_weight = (
@@ -366,13 +366,14 @@ def build_selection_groups(
     readout_pool,
     inventory_pool,
     eub338_pool,
+    panel_size=None,
 ):
     """Render source-specific controls and build optimization groups/constraints."""
     if source_mode == "From readout pool":
         if not readout_pool:
             st.info("Readout pool not found (data/readout_fluorophores.yaml).")
             st.stop()
-        return _pool_constraints("pool", readout_pool)
+        return _pool_constraints("pool", readout_pool, panel_size)
 
     if source_mode == "All fluorophores":
         if not inventory_pool:
@@ -380,13 +381,13 @@ def build_selection_groups(
                 "No fluorophores found in probe_fluor_map.yaml that also exist in dyes.yaml."
             )
             st.stop()
-        return _pool_constraints("inventory", inventory_pool)
+        return _pool_constraints("inventory", inventory_pool, panel_size)
 
     if source_mode == "EUB338 only":
         if not eub338_pool:
             st.error("No candidates found for EUB338 in probe_fluor_map.yaml.")
             st.stop()
-        return _pool_constraints("eub338", eub338_pool)
+        return _pool_constraints("eub338", eub338_pool, panel_size)
 
     # By probes mode: canonicalized fixed exact pairs + additional probes.
     canonical_probe_map, alias_to_canonical = _canonicalize_probe_map(probe_map, dye_db)
