@@ -19,6 +19,14 @@ SOFT_PENALTY_WEIGHTS = {
 }
 
 
+BRIGHTNESS_BALANCE_RATIOS = {
+    "Off": None,
+    "Weak": 16.0,
+    "Medium": 8.0,
+    "Strong": 4.0,
+}
+
+
 def _norm_probe_name(name):
     """Normalize probe names so 'EUB 338', 'EUB-338', and 'EUB338' match."""
     return re.sub(r"[^a-z0-9]+", "", str(name).lower())
@@ -139,6 +147,7 @@ def render_sidebar_config(wl):
     laser_list = []
     laser_strategy = None
     spec_res_mode = "1 nm"
+    brightness_balance = "Off"
 
     if mode == "Predicted spectra":
         laser_strategy = st.sidebar.radio(
@@ -181,6 +190,20 @@ def render_sidebar_config(wl):
             )
             laser_list.append(int(lam))
 
+        brightness_balance = st.sidebar.radio(
+            "Brightness balance",
+            tuple(BRIGHTNESS_BALANCE_RATIOS),
+            index=0,
+            key="brightness_balance_radio",
+            help=(
+                "Constrains the peak predicted brightness range after laser-power "
+                "calibration. Off applies no constraint. Weak, Medium, and Strong "
+                "limit the brightest-to-dimmest selected fluorophore ratio to 16x, "
+                "8x, and 4x, respectively. FluoroSelect alternates panel selection "
+                "and laser-power calibration because each depends on the other."
+            ),
+        )
+
     source_mode = st.sidebar.radio(
         "Selection source",
         ("By probes", "From readout pool", "All fluorophores", "EUB338 only"),
@@ -216,6 +239,8 @@ def render_sidebar_config(wl):
         "spec_res_mode": spec_res_mode,
         "source_mode": source_mode,
         "similarity_metric": similarity_metric,
+        "brightness_balance": brightness_balance,
+        "max_brightness_ratio": BRIGHTNESS_BALANCE_RATIOS[brightness_balance],
         "k_show": k_show,
     }
 

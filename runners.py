@@ -312,6 +312,8 @@ def run_fluoroselect(
     source_mode = config["source_mode"]
     k_show = config["k_show"]
     similarity_metric = config.get("similarity_metric", "Cosine similarity")
+    brightness_balance = config.get("brightness_balance", "Off")
+    max_brightness_ratio = config.get("max_brightness_ratio")
 
     use_pool = constraints["use_pool"]
     required_count = constraints["required_count"] if use_pool else None
@@ -357,6 +359,8 @@ def run_fluoroselect(
             spec_res_mode=spec_res_mode,
             k_show=k_show,
             similarity_metric=similarity_metric,
+            brightness_balance=brightness_balance,
+            max_brightness_ratio=max_brightness_ratio,
             use_pool=use_pool,
             required_count=required_count,
             fixed_fluorophores=fixed_fluorophores,
@@ -526,6 +530,8 @@ def _run_predicted_mode(
     spec_res_mode,
     k_show,
     similarity_metric,
+    brightness_balance,
+    max_brightness_ratio,
     use_pool,
     required_count,
     fixed_fluorophores,
@@ -573,82 +579,130 @@ def _run_predicted_mode(
 
     provisional_labels = [labels0[j] for j in sel0]
 
-    # Estimate laser powers on provisional set.
-    if laser_strategy == "Simultaneous":
-        powers_A, _ = derive_powers_simultaneous(
+    # Alternate panel selection and panel-dependent laser-power calibration.
+    # With brightness balancing off, one effective-spectrum reoptimization preserves
+    # the original two-round behavior. Enabled constraints iterate to a stable panel.
+    current_labels = provisional_labels
+    seen_panels = {tuple(current_labels)}
+    max_iterations = 12 if max_brightness_ratio is not None else 1
+    converged = False
+    cycle_detected = False
+
+    for iteration_count in range(1, max_iterations + 1):
+        if laser_strategy == "Simultaneous":
+            powers_A, _ = derive_powers_simultaneous(
+                wl, dye_db, current_labels, laser_list
+            )
+        else:
+            powers_A, _ = derive_powers_separate(
+                wl, dye_db, current_labels, laser_list
+            )
+
+        E_raw_all, E_norm_all, labels_all, idx_all = cached_build_effective_with_lasers(
             wl,
             dye_db,
-            provisional_labels,
+            groups,
             laser_list,
-        )
-    else:
-        powers_A, _ = derive_powers_separate(
-            wl,
-            dye_db,
-            provisional_labels,
-            laser_list,
-        )
-
-    # Build all candidate effective spectra.
-    E_raw_all, E_norm_all, labels_all, idx_all = cached_build_effective_with_lasers(
-        wl,
-        dye_db,
-        groups,
-        laser_list,
-        laser_strategy,
-        powers_A,
-    )
-
-    # Choose selection-resolution matrix.
-    if spec_res_mode == "9.8 nm" and laser_strategy == "Simultaneous":
-        E_raw_all_98 = cached_interpolate_E_on_channels(
-            wl,
-            E_raw_all,
-            DETECTION_CHANNELS,
-        )
-
-        E_raw_all_98 = apply_mbs_zeroing(
-            E_raw_all_98,
             laser_strategy,
-            spec_res_mode,
-            laser_list,
+            powers_A,
         )
 
-        E_norm_for_select = E_raw_all_98 / (
-            np.linalg.norm(E_raw_all_98, axis=0, keepdims=True) + 1e-12
-        )
-    else:
-        E_norm_for_select = E_norm_all
+        if spec_res_mode == "9.8 nm" and laser_strategy == "Simultaneous":
+            E_raw_for_select = cached_interpolate_E_on_channels(
+                wl,
+                E_raw_all,
+                DETECTION_CHANNELS,
+            )
+            E_raw_for_select = apply_mbs_zeroing(
+                E_raw_for_select,
+                laser_strategy,
+                spec_res_mode,
+                laser_list,
+            )
+            E_norm_for_select = E_raw_for_select / (
+                np.linalg.norm(E_raw_for_select, axis=0, keepdims=True) + 1e-12
+            )
+        else:
+            E_raw_for_select = E_raw_all
+            E_norm_for_select = E_norm_all
 
-    fixed_indices_all, allowed_indices_all = _constraint_indices(
-        labels_all,
-        use_pool,
-        fixed_fluorophores,
-        allowed_fluorophores,
-        fixed_probe_pairs,
-    )
-
-    candidate_penalties_all = _candidate_penalties(labels_all, low_priority_fluorophores)
-
-    try:
-        sel_idx, _ = solve_lexicographic_k(
-            E_norm_for_select,
-            idx_all,
+        fixed_indices_all, allowed_indices_all = _constraint_indices(
             labels_all,
-            levels=10,
-            enforce_unique=True,
-            required_count=required_count,
-            fixed_indices=fixed_indices_all,
-            allowed_indices=allowed_indices_all,
-            similarity_metric=similarity_metric,
-            candidate_penalties=candidate_penalties_all,
-            soft_penalty_weight=soft_penalty_weight,
+            use_pool,
+            fixed_fluorophores,
+            allowed_fluorophores,
+            fixed_probe_pairs,
         )
-    except ValueError as exc:
-        st.error(str(exc))
-        st.stop()
+        candidate_penalties_all = _candidate_penalties(
+            labels_all, low_priority_fluorophores
+        )
+        brightness_values = np.max(np.maximum(E_raw_for_select, 0.0), axis=0)
 
-    final_labels = [labels_all[j] for j in sel_idx]
+        try:
+            sel_idx, _ = solve_lexicographic_k(
+                E_norm_for_select,
+                idx_all,
+                labels_all,
+                levels=10,
+                enforce_unique=True,
+                required_count=required_count,
+                fixed_indices=fixed_indices_all,
+                allowed_indices=allowed_indices_all,
+                similarity_metric=similarity_metric,
+                candidate_penalties=candidate_penalties_all,
+                soft_penalty_weight=soft_penalty_weight,
+                brightness_values=brightness_values,
+                max_brightness_ratio=max_brightness_ratio,
+            )
+        except ValueError as exc:
+            if max_brightness_ratio is not None:
+                st.error(
+                    f"No panel satisfies the {brightness_balance.lower()} brightness "
+                    f"constraint ({max_brightness_ratio:g}x maximum ratio) together "
+                    f"with the other selection constraints. {exc}"
+                )
+            else:
+                st.error(str(exc))
+            st.stop()
+
+        next_labels = [labels_all[j] for j in sel_idx]
+        if next_labels == current_labels:
+            converged = True
+            current_labels = next_labels
+            break
+
+        signature = tuple(next_labels)
+        if signature in seen_panels:
+            cycle_detected = True
+            current_labels = next_labels
+            break
+
+        seen_panels.add(signature)
+        current_labels = next_labels
+
+    final_labels = current_labels
+
+    if max_brightness_ratio is not None:
+        if not converged:
+            reason = (
+                "entered a repeated-panel cycle"
+                if cycle_detected
+                else f"did not stabilize within {max_iterations} iterations"
+            )
+            st.error(
+                "The panel–power iteration "
+                + reason
+                + ", so FluoroSelect could not certify the requested brightness "
+                "constraint after recalibrating the lasers. Try a weaker brightness "
+                "balance, different lasers, or a broader candidate set."
+            )
+            st.stop()
+
+        st.caption(
+            f"Brightness balance: {brightness_balance} "
+            f"(≤{max_brightness_ratio:g}x); panel–power calibration converged "
+            f"in {iteration_count} iteration(s)."
+        )
 
     worst_idx = select_worst_group_constrained(
         E_norm_for_select,
@@ -703,6 +757,29 @@ def _run_predicted_mode(
         E_raw_sel = E_raw_sel_1nm
         E_norm_sel = E_norm_sel_1nm
         x_axis = wl
+
+    if max_brightness_ratio is not None and E_raw_sel.shape[1] > 0:
+        selected_brightness = np.max(np.maximum(E_raw_sel, 0.0), axis=0)
+        positive = selected_brightness[selected_brightness > 0.0]
+        actual_brightness_ratio = (
+            float(np.max(positive) / np.min(positive))
+            if positive.size == selected_brightness.size and positive.size > 0
+            else np.inf
+        )
+        if actual_brightness_ratio <= max_brightness_ratio + 1e-9:
+            st.caption(
+                f"Final predicted peak-brightness ratio: "
+                f"{actual_brightness_ratio:.2f}x (limit {max_brightness_ratio:g}x)."
+            )
+        else:
+            st.error(
+                f"After final laser-power recalibration, the selected panel has a "
+                f"{actual_brightness_ratio:.2f}x predicted peak-brightness ratio, "
+                f"above the requested {max_brightness_ratio:g}x limit. No result is "
+                "shown because the requested brightness constraint is not satisfied. "
+                "Try a weaker constraint, different lasers, or a broader candidate set."
+            )
+            st.stop()
 
     # Sort selected labels by emission peak.
     if labels_sel:

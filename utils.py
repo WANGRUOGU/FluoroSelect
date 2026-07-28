@@ -624,6 +624,8 @@ def _build_selection_model(
     candidate_penalties=None,
     soft_penalty_weight=0.0,
     max_score_bound=None,
+    brightness_values=None,
+    max_brightness_ratio=None,
 ):
     """Build a binary selection model with linked pair variables."""
     N = C.shape[0]
@@ -651,6 +653,27 @@ def _build_selection_model(
             y[(i, j)] = pulp.LpVariable(f"y_{i}_{j}", lowBound=0, upBound=1)
 
     _add_fixed_allowed_constraints(prob, x, N, fixed_indices, allowed_indices)
+
+    if brightness_values is not None and max_brightness_ratio is not None:
+        brightness = np.asarray(brightness_values, dtype=float)
+        if brightness.size != N:
+            raise ValueError("brightness_values must have one value per candidate column.")
+
+        ratio_limit = float(max_brightness_ratio)
+        if ratio_limit < 1.0:
+            raise ValueError("max_brightness_ratio must be at least 1.")
+
+        for i, value in enumerate(brightness):
+            if not np.isfinite(value) or value <= 0.0:
+                prob += x[i] == 0, f"PositiveBrightness_{i}"
+
+        for i in range(N):
+            for j in range(i + 1, N):
+                low = min(brightness[i], brightness[j])
+                high = max(brightness[i], brightness[j])
+                ratio = np.inf if low <= 0.0 < high else (high / low if low > 0.0 else 1.0)
+                if ratio > ratio_limit + 1e-12:
+                    prob += x[i] + x[j] <= 1, f"BrightnessRatio_{i}_{j}"
 
     if required_count is None:
         for g, idxs in enumerate(idx_groups):
@@ -721,6 +744,8 @@ def solve_minimax_layer(
     similarity_metric="Cosine similarity",
     candidate_penalties=None,
     soft_penalty_weight=0.0,
+    brightness_values=None,
+    max_brightness_ratio=None,
 ):
     """
     Minimize the maximum pairwise similarity among selected columns.
@@ -741,6 +766,8 @@ def solve_minimax_layer(
         allowed_indices=allowed_indices,
         objective_coeffs=None,
         max_score_bound=None,
+        brightness_values=brightness_values,
+        max_brightness_ratio=max_brightness_ratio,
     )
 
     x_star = _solve_model(prob, x, idx_groups=idx_groups, required_count=required_count)
@@ -761,6 +788,8 @@ def solve_lexicographic_k(
     similarity_metric="Cosine similarity",
     candidate_penalties=None,
     soft_penalty_weight=0.0,
+    brightness_values=None,
+    max_brightness_ratio=None,
 ):
     """
     Select fluorophores by first minimizing the worst selected-pair score,
@@ -785,6 +814,8 @@ def solve_lexicographic_k(
         fixed_indices=fixed_indices,
         allowed_indices=allowed_indices,
         similarity_metric=similarity_metric,
+        brightness_values=brightness_values,
+        max_brightness_ratio=max_brightness_ratio,
     )
 
     # Second stage: among all minimax-optimal panels, reduce the remaining high scores.
@@ -805,6 +836,8 @@ def solve_lexicographic_k(
             candidate_penalties=candidate_penalties,
             soft_penalty_weight=soft_penalty_weight,
             max_score_bound=best_t,
+            brightness_values=brightness_values,
+            max_brightness_ratio=max_brightness_ratio,
         )
         sel = _solve_model(prob, x, idx_groups=idx_groups, required_count=required_count)
     except Exception:
