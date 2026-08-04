@@ -6,12 +6,12 @@ DYES_YAML = "data/dyes.yaml"
 PROBE_MAP_YAML = "data/probe_fluor_map.yaml"
 READOUT_POOL_YAML = "data/readout_fluorophores.yaml"
 
-# Detection channels for Valm lab (33 channels)
+# Detection channels for Valm lab (32 channels)
 DETECTION_CHANNELS = np.array([
     414, 423, 432, 441, 450, 459, 468, 477, 486,
     494, 503, 512, 521, 530, 539, 548, 557, 566,
     575, 583, 592, 601, 610, 619, 628, 637, 646,
-    655, 664, 673, 681, 690, 717
+    655, 664, 673, 681, 690
 ], dtype=float)
 
 # Default RGB colors for up to 8 dyes; beyond that, generate procedurally
