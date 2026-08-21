@@ -81,9 +81,6 @@ def spectral_angle_classify_and_estimate(Timg, E, eps=1e-12):
     abundance[pixel_norms <= eps] = 0.0
     Ahat = np.zeros((M.shape[0], E.shape[1]), dtype=float)
     Ahat[np.arange(M.shape[0]), predicted] = abundance
-    max_abundance = float(np.max(Ahat))
-    if max_abundance > 0.0:
-        Ahat /= max_abundance
     return Ahat.reshape(H, W, E.shape[1]), predicted.reshape(H, W)
 
 
@@ -185,7 +182,7 @@ def _suggest_canvas_size(R, rods_per, target_density=0.22, min_side=160):
 
 def simulate_rods_and_unmix(E, H=None, W=None, rods_per=3, rng=None):
     """
-    Forward: T = Atrue ⊗ E; scale to peak=50 expected counts; Poisson;
+    Forward: T = Atrue ⊗ E; scale to peak=25 expected counts; Poisson;
     spectral-angle classification followed by one-dimensional NNLS abundance fitting.
     Auto-resize canvas so each fluorophore can place 'rods_per' rods if possible.
     """
@@ -214,7 +211,7 @@ def simulate_rods_and_unmix(E, H=None, W=None, rods_per=3, rng=None):
     for c in range(C):
         Tclean[:, :, c] = np.tensordot(Atrue, E[c, :], axes=([2], [0]))
 
-    peak = 50.0
+    peak = 25.0
     Tmax = float(np.max(Tclean))
     if Tmax <= 0:
         Tnoisy = np.zeros_like(Tclean)

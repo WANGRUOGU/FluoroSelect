@@ -23,7 +23,7 @@ need to repeat in two consecutive iterations.
 
 ## Simulated classification and abundance estimation
 
-Synthetic images are scaled to a peak expected count of 50 before Poisson sampling.
+Synthetic images are scaled to a peak expected count of 25 before Poisson sampling.
 Each pixel is classified by spectral angle (cosine similarity), after which its
 abundance is estimated by a one-dimensional nonnegative least-squares fit using
 only the classified fluorophore spectrum. Per-fluorophore results report abundance

@@ -50,9 +50,3 @@ run_fluoroselect(
     constraints=selection,
     app_context=ai_app_context,
 )
-
-st.caption(
-    "AI-assisted features are optional and are used only for input parsing, "
-    "and lightweight Q&A. "
-    "Optimization results are computed by the FluoroSelect algorithm."
-)

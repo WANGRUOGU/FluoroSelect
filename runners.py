@@ -17,7 +17,6 @@ from sim_core import (
     argmax_labelmap,
     colorize_composite,
     simulate_rods_and_unmix,
-    to_uint8_gray,
 )
 from ui_helpers import (
     ensure_colors,
@@ -26,7 +25,6 @@ from ui_helpers import (
     pair_only_fluor,
     prettify_name,
     rgb01_to_plotly,
-    show_bw_grid,
 )
 from utils import (
     build_emission_only_matrix,
@@ -101,30 +99,13 @@ def _render_soft_penalty_note(low_priority_fluorophores, soft_penalty_strength):
 
 def _render_selection_tables(use_pool, labels, sel_idx, predicted=False):
     """Render the selected-panel table."""
-    if predicted:
-        title = (
-            "Selected fluorophores (with lasers, best)"
-            if use_pool
-            else "Selected probe–fluorophore pairs (with lasers, best)"
-        )
-    else:
-        title = (
-            "Selected fluorophores (best)"
-            if use_pool
-            else "Selected probe–fluorophore pairs (best)"
-        )
+    title = "Selected fluorophores" if use_pool else "Selected probe–fluorophore pairs"
 
     st.subheader(title)
 
     if use_pool:
         fluors = [fluor_from_label(labels[j]) for j in sel_idx]
-
-        html_two_row_table(
-            "Slot",
-            "Fluorophore",
-            [f"Slot {i + 1}" for i in range(len(fluors))],
-            fluors,
-        )
+        st.write(" · ".join(fluors))
 
     else:
         sel_pairs = [labels[j] for j in sel_idx]
@@ -199,7 +180,7 @@ def _render_simulation_and_metrics(E_chan, colors, names):
     """
     Run synthetic rod simulation, render unmixing images, and compute metrics.
 
-    Current noise model: the clean image is scaled to peak expected count 50, then
+    Current noise model: the clean image is scaled to peak expected count 25, then
     Poisson shot noise is sampled.
     """
     Atrue, Ahat, predicted_labels = simulate_rods_and_unmix(E_chan, rods_per=3)
@@ -207,7 +188,7 @@ def _render_simulation_and_metrics(E_chan, colors, names):
     col_l, col_r = st.columns(2)
 
     true_rgb = (colorize_composite(Atrue, colors) * 255).astype(np.uint8)
-    labelmap_rgb = argmax_labelmap(Ahat, colors)
+    labelmap_rgb = argmax_labelmap(Ahat, colors, rescale_global=True)
 
     with col_l:
         st.image(true_rgb, use_container_width=True, clamp=True)
@@ -217,16 +198,7 @@ def _render_simulation_and_metrics(E_chan, colors, names):
         st.image(labelmap_rgb, use_container_width=True, clamp=True)
         st.caption("Spectral-angle classification and abundance estimates")
 
-    unmix_bw = [to_uint8_gray(Ahat[:, :, r]) for r in range(Ahat.shape[2])]
-
     st.divider()
-
-    show_bw_grid(
-        "Per-fluorophore abundance estimates (grayscale)",
-        unmix_bw,
-        names,
-        cols_per_row=6,
-    )
 
     acc_vals = compute_classification_accuracy(Atrue, predicted_labels)
 
@@ -243,11 +215,6 @@ def _render_simulation_and_metrics(E_chan, colors, names):
     )
 
     render_metrics_table(names, rmse_vals, acc_vals)
-
-    st.caption(
-        "Simulation note: synthetic images are generated under Poisson shot noise "
-        "after scaling the clean image to a peak expected count of 50."
-    )
 
     return rmse_vals, acc_vals
 
@@ -458,22 +425,7 @@ def _run_emission_mode(
 
     colors = ensure_colors(len(sel_idx))
 
-    _render_selection_tables(
-        use_pool=use_pool,
-        labels=labels,
-        sel_idx=sel_idx,
-        predicted=False,
-    )
-    _render_soft_penalty_note(low_priority_fluorophores, soft_penalty_strength)
-
     selected_labels = [labels[j] for j in sel_idx]
-
-    tops = _render_pairwise_table(
-        E_norm[:, sel_idx],
-        selected_labels,
-        k_show,
-        similarity_metric=similarity_metric,
-    )
 
     _render_spectra(
         x_axis=wl,
@@ -482,6 +434,21 @@ def _run_emission_mode(
         colors=colors,
         y_title="Normalized intensity",
         normalize_by=None,
+    )
+
+    _render_selection_tables(
+        use_pool=use_pool,
+        labels=labels,
+        sel_idx=sel_idx,
+        predicted=False,
+    )
+    _render_soft_penalty_note(low_priority_fluorophores, soft_penalty_strength)
+
+    _render_pairwise_table(
+        E_norm[:, sel_idx],
+        selected_labels,
+        k_show,
+        similarity_metric=similarity_metric,
     )
 
     E_chan = cached_interpolate_E_on_channels(
@@ -721,12 +688,6 @@ def _run_predicted_mode(
             )
             st.stop()
 
-        st.caption(
-            f"Brightness balance: {brightness_balance} "
-            f"(minimum relative brightness {1.0 / max_brightness_ratio:.3f}); "
-            f"certified after {iteration_count} iteration(s)."
-        )
-
     # Reuse the self-calibrated powers that certified the brightness constraint.
     if certified_powers is not None:
         powers, B = certified_powers, certified_B
@@ -784,12 +745,7 @@ def _run_predicted_mode(
             if certified_minimum is not None
             else float(np.min(relative_brightness)) if relative_brightness.size else 0.0
         )
-        if actual_minimum >= minimum_relative_brightness - 1e-9:
-            st.caption(
-                f"Final dimmest relative peak brightness: {actual_minimum:.3f} "
-                f"(minimum {minimum_relative_brightness:.3f}; brightest = 1)."
-            )
-        else:
+        if actual_minimum < minimum_relative_brightness - 1e-9:
             st.error(
                 f"After final laser-power recalibration, the dimmest selected "
                 f"fluorophore has relative peak brightness {actual_minimum:.3f}, "
@@ -808,19 +764,22 @@ def _run_predicted_mode(
 
     colors = ensure_colors(len(labels_sel))
 
-    if use_pool:
-        st.subheader("Selected fluorophores (with lasers, best)")
-        fluors = [fluor_from_label(s) for s in labels_sel]
+    _render_spectra(
+        x_axis=x_axis,
+        spectra=E_raw_sel,
+        labels=labels_sel,
+        colors=colors,
+        y_title="Normalized intensity (relative to B)",
+        normalize_by=B,
+    )
 
-        html_two_row_table(
-            "Slot",
-            "Fluorophore",
-            [f"Slot {i + 1}" for i in range(len(fluors))],
-            fluors,
-        )
+    if use_pool:
+        st.subheader("Selected fluorophores")
+        fluors = [fluor_from_label(s) for s in labels_sel]
+        st.write(" · ".join(fluors))
 
     else:
-        st.subheader("Selected probe–fluorophore pairs (with lasers, best)")
+        st.subheader("Selected probe–fluorophore pairs")
 
         html_two_row_table(
             "Probe",
@@ -831,20 +790,11 @@ def _run_predicted_mode(
 
     _render_soft_penalty_note(low_priority_fluorophores, soft_penalty_strength)
 
-    tops = _render_pairwise_table(
+    _render_pairwise_table(
         E_norm_sel,
         labels_sel,
         k_show,
         similarity_metric=similarity_metric,
-    )
-
-    _render_spectra(
-        x_axis=x_axis,
-        spectra=E_raw_sel,
-        labels=labels_sel,
-        colors=colors,
-        y_title="Normalized intensity (relative to B)",
-        normalize_by=B,
     )
 
     E_chan = E_raw_sel / (B + 1e-12)
