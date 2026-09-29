@@ -1,9 +1,10 @@
-streamlit
-pandas
-numpy
-plotly
-ortools
-pyyaml
-pulp
-h5py
-google-genai
+streamlit==1.64.0
+pandas==3.0.6
+numpy==2.5.3
+plotly==7.1.0
+ortools==9.15.6755
+pyyaml==6.0.3
+# PuLP 4 removes PULP_CBC_CMD and changes the modeling API.
+pulp==3.3.0
+h5py==3.16.0
+google-genai==2.25.0

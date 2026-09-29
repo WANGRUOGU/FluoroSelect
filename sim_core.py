@@ -84,6 +84,7 @@ def spectral_angle_classify_and_estimate(Timg, E, eps=1e-12):
     abundance[pixel_norms <= eps] = 0.0
     Ahat = np.zeros((M.shape[0], E.shape[1]), dtype=float)
     Ahat[np.arange(M.shape[0]), predicted] = abundance
+    predicted[pixel_norms <= eps] = -1  # Zero photons: unclassified, not dye 0.
 
     return Ahat.reshape(H, W, E.shape[1]), predicted.reshape(H, W)
 
@@ -226,7 +227,28 @@ def simulate_rods_and_unmix(E, H=None, W=None, rods_per=3, rng=None):
         lam = Tclean * (peak / Tmax)
         lam = np.nan_to_num(lam, nan=0.0, posinf=1e6, neginf=0.0)
         lam = np.clip(lam, 0.0, 1e6)
-        Tnoisy = rng.poisson(lam).astype(float) / peak
+        Tnoisy = rng.poisson(lam).astype(float) / (peak / Tmax)
 
     Ahat, predicted = spectral_angle_classify_and_estimate(Tnoisy, E)
+    return Atrue, Ahat, predicted
+
+
+def simulate_balanced_pixels(E, pixels_per_class=100, peak=25.0, rng=None):
+    """Paper evaluation: one dye per pixel, equal counts, abundance U(0.5,1)."""
+    rng = np.random.default_rng() if rng is None else rng
+    E = np.asarray(E, dtype=float)
+    if E.ndim != 2 or E.shape[1] == 0 or not np.all(np.isfinite(E)) or np.any(E < 0):
+        raise ValueError("Spectra must be a finite nonnegative matrix with at least one dye.")
+    if np.any(np.max(E, axis=0) <= 0):
+        raise ValueError("Every selected dye must have a nonzero detected spectrum.")
+    if pixels_per_class < 1 or peak <= 0:
+        raise ValueError("Pixel count and photon setting must be positive.")
+    R = E.shape[1]
+    labels = rng.permutation(np.repeat(np.arange(R), pixels_per_class))
+    Atrue = np.zeros((len(labels), 1, R))
+    Atrue[np.arange(len(labels)), 0, labels] = rng.uniform(0.5, 1.0, len(labels))
+    clean = Atrue @ E.T
+    scale = peak / float(clean.max())
+    observed = rng.poisson(clean * scale).astype(float)
+    Ahat, predicted = spectral_angle_classify_and_estimate(observed, E * scale)
     return Atrue, Ahat, predicted

@@ -5,13 +5,13 @@ import pulp
 
 # --- CBC solver: no time/gap limits, quiet log ---
 def _make_cbc_exact():
-    try:
-        return pulp.PULP_CBC_CMD(msg=False, mip=True)
-    except TypeError:
-        return pulp.PULP_CBC_CMD(msg=False)
-
-
-_SOLVER = _make_cbc_exact()
+    factory = getattr(pulp, "PULP_CBC_CMD", None)
+    if factory is None:
+        raise ValueError("Unsupported PuLP version. Reinstall requirements.txt (PuLP 3.3.0).")
+    solver = factory(msg=False, mip=True, gapRel=0.0, gapAbs=0.0)
+    if not solver.available():
+        raise ValueError("CBC is unavailable. Reinstall requirements.txt for this platform.")
+    return solver
 
 
 # ====================== I/O ======================
@@ -38,6 +38,12 @@ def load_dyes_yaml(path):
     for name, rec in data["dyes"].items():
         em = np.array(rec.get("emission", []), dtype=float)
         ex = np.array(rec.get("excitation", []), dtype=float)
+        if not np.all(np.isfinite(em)) or not np.all(np.isfinite(ex)):
+            raise ValueError(f"Non-finite spectrum for {name}.")
+        # Baseline subtraction can leave negative tails in measured profiles.
+        # Selection and the photon model both require nonnegative spectra.
+        em = np.maximum(em, 0.0)
+        ex = np.maximum(ex, 0.0)
         qy = rec.get("quantum_yield", None)
         ec = rec.get("extinction_coeff", None)
 
@@ -565,20 +571,25 @@ def _unique_dye_constraints(prob, x_vars, labels_pair):
 
 # =================== Optimization helpers ===================
 def _pick_integral_from_solution(x_vars, idx_groups=None, required_count=None):
-    xvals = np.array([(v.value() or 0.0) for v in x_vars], dtype=float)
+    values = [v.value() for v in x_vars]
+    if any(v is None for v in values):
+        raise ValueError("Optimization returned missing selection values.")
+    xvals = np.asarray(values, dtype=float)
+    if not np.all(np.isfinite(xvals)) or np.any(np.abs(xvals - np.round(xvals)) > 1e-6):
+        raise ValueError("Optimization did not return an integral selection.")
 
     if required_count is not None:
         chosen = [j for j, v in enumerate(xvals) if v > 0.5]
         if len(chosen) != int(required_count):
-            chosen = list(np.argsort(-xvals)[: int(required_count)])
+            raise ValueError("Optimization returned an incomplete panel.")
         return [int(j) for j in chosen]
 
     sel = []
     for idxs in idx_groups or []:
-        if not idxs:
-            continue
-        j_local = int(np.argmax(xvals[idxs]))
-        sel.append(int(idxs[j_local]))
+        chosen = [j for j in idxs if xvals[j] > 0.5]
+        if len(chosen) != 1:
+            raise ValueError("Optimization returned an incomplete probe assignment.")
+        sel.append(int(chosen[0]))
     return sel
 
 
@@ -721,10 +732,10 @@ def _build_selection_model(
 
 
 def _solve_model(prob, x, idx_groups=None, required_count=None):
-    status = prob.solve(_SOLVER)
+    status = prob.solve(_make_cbc_exact())
     status_name = pulp.LpStatus.get(status, str(status))
 
-    if status_name not in {"Optimal", "Feasible"}:
+    if status != pulp.LpStatusOptimal or prob.sol_status != pulp.LpSolutionOptimal:
         raise ValueError(f"Optimization failed: {status_name}.")
 
     return _pick_integral_from_solution(
@@ -842,6 +853,9 @@ def solve_lexicographic_k(
             max_brightness_ratio=max_brightness_ratio,
         )
         sel = _solve_model(prob, x, idx_groups=idx_groups, required_count=required_count)
+        selected_max = max((C[i, j] for i in sel for j in sel if i < j), default=0.0)
+        if selected_max > best_t + 1e-9:
+            sel = sel0
     except Exception:
         sel = sel0
 

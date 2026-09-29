@@ -11,12 +11,13 @@ from data_helpers import (
     fluor_from_label,
     sorted_order_by_peak,
 )
-from metrics import compute_classification_accuracy
+from metrics import summarize_performance
 from result_utils import render_metrics_table
 from sim_core import (
     argmax_labelmap,
     colorize_composite,
     simulate_rods_and_unmix,
+    simulate_balanced_pixels,
 )
 from ui_helpers import (
     ensure_colors,
@@ -200,21 +201,33 @@ def _render_simulation_and_metrics(E_chan, colors, names):
 
     st.divider()
 
-    acc_vals = compute_classification_accuracy(Atrue, predicted_labels)
-
-    rmse_vals = [
-        float(np.sqrt(np.mean((Ahat[:, :, r] - Atrue[:, :, r]) ** 2)))
-        for r in range(len(names))
-    ]
+    results = [summarize_performance(*simulate_balanced_pixels(E_chan)) for _ in range(5)]
+    acc_vals = np.mean([r["accuracy"] for r in results], axis=0).tolist()
+    rmse_vals = np.mean([r["rmse"] for r in results], axis=0).tolist()
+    st.caption(
+        "Images above are illustrative. Metrics below use 100 pixels per dye, "
+        "one dye per pixel, abundances from 0.5 to 1, and peak expected channel count 25. "
+        "Values are averages of five independent simulations. Zero-photon pixels count as errors."
+    )
 
     metric_header(
         "Per-fluorophore metrics",
-        "RMSE: Root-mean-square error of the estimated abundance map for each fluorophore.\n"
+        "RMSE: Root mean squared abundance error only on pixels truly containing that dye. "
+        "Misclassified pixels have zero estimated abundance for their true dye.\n"
         "Accuracy: Among pixels where a fluorophore is truly present, the percentage "
         "classified as that fluorophore by spectral-angle classification.",
     )
 
     render_metrics_table(names, rmse_vals, acc_vals)
+    summary_cols = st.columns(4)
+    for col, label, key, percent in zip(
+        summary_cols,
+        ["Macro accuracy", "Worst-class accuracy", "True-class RMSE", "Worst-class RMSE"],
+        ["macro_accuracy", "worst_accuracy", "true_class_rmse", "worst_class_rmse"],
+        [True, True, False, False],
+    ):
+        value = float(np.mean([r[key] for r in results]))
+        col.metric(label, f"{100 * value:.1f}%" if percent else f"{value:.4f}")
 
     return rmse_vals, acc_vals
 
@@ -624,7 +637,7 @@ def _run_predicted_mode(
         except ValueError as exc:
             if max_brightness_ratio is not None:
                 st.error(
-                    f"No panel satisfies the {brightness_balance.lower()} brightness "
+                    f"Selection at the current calibrated powers could not satisfy the {brightness_balance.lower()} brightness "
                     f"constraint (minimum relative brightness "
                     f"{1.0 / max_brightness_ratio:.3f}) together "
                     f"with the other selection constraints. {exc}"
