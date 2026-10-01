@@ -70,3 +70,17 @@ Run the optimizer tests with:
 ```bash
 python -m unittest discover -s tests -v
 ```
+# Tutorial and purchase planning
+
+Use the sidebar **Page → Tutorial** for explanations of selection sources,
+spectral modes, constraints, similarities and optional Gemini usage.
+**Add probe / compare purchase options** adds or replaces a probe's candidate
+labels for the current browser session only. Candidates must have spectra in
+the library. Fix existing probe–label pairs, include the prospective probe under
+**By probes**, and optimize as usual. This does not verify vendor availability.
+The similarity display count is now 1–50 and never changes the objective.
+
+Gemini requests use the owner's configured API project. Transient provider
+errors receive up to three attempts, with SDK retries disabled to avoid nested
+retry loops. Failed input is retained for manual retry. Manual panel design
+does not require AI. Tests mock provider failures and do not consume API tokens.

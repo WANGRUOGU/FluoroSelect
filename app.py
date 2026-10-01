@@ -7,14 +7,19 @@ from data_helpers import get_eub338_pool, get_inventory_from_probe_map, load_rea
 from runners import run_fluoroselect
 from selection_ui import build_selection_groups, render_sidebar_config
 from utils import load_dyes_yaml, load_probe_fluor_map
+from tutorial import render_tutorial, render_purchase_options
 
 
 st.set_page_config(page_title="Fluorophore Selection", layout="wide")
 st.title("Fluorophore Selection for Multiplexed Imaging")
+if st.sidebar.radio("Page", ("Panel design", "Tutorial")) == "Tutorial":
+    render_tutorial()
+    st.stop()
 
 # -------------------- Data --------------------
 wl, dye_db = load_dyes_yaml(DYES_YAML)
 probe_map = load_probe_fluor_map(PROBE_MAP_YAML)
+probe_map = render_purchase_options(probe_map, dye_db)
 readout_pool = load_readout_pool(READOUT_POOL_YAML, list(dye_db.keys()))
 inventory_pool = get_inventory_from_probe_map(probe_map, dye_db)
 eub338_pool = get_eub338_pool(probe_map, dye_db)

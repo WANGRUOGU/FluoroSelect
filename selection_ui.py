@@ -147,8 +147,9 @@ def render_sidebar_config(wl):
         "Mode",
         options=("Emission spectra", "Predicted spectra"),
         help=(
-            "Emission: emission-only, peak-normalized.\n"
-            "Predicted: effective spectra with lasers (excitation · QY · EC)."
+            "Emission compares normalized spectral shapes. Predicted also models "
+            "your lasers and dye excitation, quantum yield and extinction coefficient. "
+            "Neither replaces measured microscope spectra. See Tutorial for examples."
         ),
         key="mode_radio",
     )
@@ -215,12 +216,13 @@ def render_sidebar_config(wl):
         )
 
     k_show = st.sidebar.slider(
-        "Show top-K similarities",
-        5,
+        "Number of similar pairs to display",
+        1,
         50,
         5,
         1,
         key="k_show_slider",
+        help="Display only. The optimizer considers every eligible pair regardless of this count.",
     )
 
     return {

@@ -1,6 +1,7 @@
 # ai_helper.py
 import json
 import re
+import time
 from typing import Any, Dict, Optional
 
 import streamlit as st
@@ -29,12 +30,21 @@ def get_gemini_client() -> Optional[Any]:
     if genai is None:
         return None
 
-    api_key = st.secrets.get("GEMINI_API_KEY", None)
+    try:
+        api_key = st.secrets.get("GEMINI_API_KEY", None)
+    except FileNotFoundError:
+        return None
 
     if not api_key:
         return None
 
-    return genai.Client(api_key=api_key)
+    from google.genai import types
+    return genai.Client(api_key=api_key, http_options=types.HttpOptions(
+        timeout=15000, retry_options=types.HttpRetryOptions(attempts=1)))
+
+
+class AIServiceError(RuntimeError):
+    """Safe user-facing error without provider payloads or credentials."""
 
 
 def get_model_name() -> str:
@@ -45,17 +55,24 @@ def call_gemini(prompt: str) -> str:
     client = get_gemini_client()
 
     if client is None:
-        return (
-            "Gemini API key is not configured. "
-            "Please add GEMINI_API_KEY to Streamlit secrets."
-        )
+        raise AIServiceError("AI is not configured. You can use all manual selection controls.")
 
-    response = client.models.generate_content(
-        model=get_model_name(),
-        contents=f"{SYSTEM_MESSAGE}\n\n{prompt}",
-    )
-
-    return response.text or ""
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=get_model_name(), contents=f"{SYSTEM_MESSAGE}\n\n{prompt}")
+            return response.text or ""
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if code in (429, 500, 502, 503, 504) and attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            message = ("Google's AI service is temporarily busy. Try again later or use manual controls."
+                       if code in (500, 502, 503, 504) else
+                       "The AI project's quota or rate limit was reached. Try later or use manual controls."
+                       if code == 429 else
+                       "AI could not complete this request. Try again later or use manual controls.")
+            raise AIServiceError(message) from None
 
 
 def extract_json(text: str) -> Dict[str, Any]:

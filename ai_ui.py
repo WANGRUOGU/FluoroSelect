@@ -648,9 +648,10 @@ def _submit_ai_input(app_context):
             answer = answer_light_question(user_text, app_context, result_context)
             st.session_state["last_ai_answer"] = answer
         except Exception as exc:
-            st.session_state["last_ai_answer"] = f"AI question failed: {exc}"
-        finally:
-            st.session_state["ai_main_input"] = ""
+            st.session_state["ai_status_message"] = f"AI request failed: {exc}"
+            return
+        st.session_state["ai_main_input"] = ""
+        st.session_state.pop("ai_status_message", None)
 
         return
 
@@ -667,9 +668,8 @@ def _submit_ai_input(app_context):
 
     except Exception as exc:
         st.session_state["ai_status_message"] = f"AI parsing failed: {exc}"
-
-    finally:
-        st.session_state["ai_main_input"] = ""
+        return
+    st.session_state["ai_main_input"] = ""
 
 
 def render_ai_input_assistant(app_context):
@@ -699,12 +699,14 @@ def render_ai_input_assistant(app_context):
     status = st.session_state.get("ai_status_message")
 
     if status:
-        if status.startswith("AI parsing failed"):
+        if status.startswith(("AI parsing failed", "AI request failed")):
             st.warning(status)
+            st.button("Retry AI request", on_click=_submit_ai_input, args=(app_context,))
         else:
             st.caption(status)
 
     answer = st.session_state.get("last_ai_answer")
+    st.caption("Optional Gemini assistant. Uses the app owner's API quota. See Tutorial for terminology and AI usage.")
     if answer:
         st.markdown(answer)
 
@@ -733,14 +735,21 @@ def render_ai_result_panel(result_context, app_context):
         with col1:
             if st.button("Explain", key=f"ai_explain_{result_context['run_id']}"):
                 with st.spinner("Generating short explanation..."):
-                    st.markdown(explain_result(result_context))
+                    _show_ai_result(explain_result, result_context)
 
         with col2:
             if st.button("Suggest next step", key=f"ai_suggest_{result_context['run_id']}"):
                 with st.spinner("Generating suggestions..."):
-                    st.markdown(suggest_improvements(result_context))
+                    _show_ai_result(suggest_improvements, result_context)
 
         with col3:
             if st.button("Methods text", key=f"ai_methods_{result_context['run_id']}"):
                 with st.spinner("Generating methods draft..."):
-                    st.markdown(generate_methods_text(result_context))
+                    _show_ai_result(generate_methods_text, result_context)
+
+
+def _show_ai_result(action, result_context):
+    try:
+        st.markdown(action(result_context))
+    except Exception:
+        st.warning("AI could not complete this request. Try again later. Your computed panel is unchanged.")
