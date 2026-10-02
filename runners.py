@@ -2,6 +2,7 @@
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+from purchase_advice import render_purchase_advice
 
 from config import DETECTION_CHANNELS
 from data_helpers import (
@@ -463,6 +464,9 @@ def _run_emission_mode(
         k_show,
         similarity_metric=similarity_metric,
     )
+    if not use_pool:
+        library, library_labels, _ = build_emission_only_matrix(wl, dye_db, {"Library": sorted(dye_db)})
+        render_purchase_advice(E_norm[:, sel_idx], selected_labels, library, library_labels, fixed_probe_pairs)
 
     E_chan = cached_interpolate_E_on_channels(
         wl,
@@ -809,6 +813,14 @@ def _run_predicted_mode(
         k_show,
         similarity_metric=similarity_metric,
     )
+    if not use_pool:
+        library_raw, library, library_labels, _ = cached_build_effective_with_lasers(
+            wl, dye_db, {"Library": sorted(dye_db)}, laser_list, laser_strategy, powers)
+        if spec_res_mode == "9.8 nm" and laser_strategy == "Simultaneous":
+            library_raw = cached_interpolate_E_on_channels(wl, library_raw, DETECTION_CHANNELS)
+            library_raw = apply_mbs_zeroing(library_raw, laser_strategy, spec_res_mode, laser_list)
+            library = library_raw / (np.linalg.norm(library_raw, axis=0, keepdims=True) + 1e-12)
+        render_purchase_advice(E_norm_sel, labels_sel, library, library_labels, fixed_probe_pairs)
 
     E_chan = E_raw_sel / (B + 1e-12)
     names = [prettify_name(s) for s in labels_sel]

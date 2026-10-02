@@ -35,6 +35,13 @@ first. The display count (previously called top-K) only controls how many pairs
 you see. Five was a display default, not a scientific minimum. You can now choose
 1–50. Showing more pairs gives more detail but a longer table. It does not change
 the optimization, which considers every eligible pair.
+The pair list helps you identify labels worth reconsidering, but spectral
+similarity alone does not show which probe will perform worst experimentally.
+For probe designs with maximum similarity at least 0.90, **Purchase candidates**
+screens replacements for either probe in the most similar pair using library
+spectra. Fixed pairs are preserved. This threshold is only a screening trigger.
+Candidates are ranked by the maximum similarity of the entire replacement panel,
+not just improvement of one pair. Rerun a candidate to check all constraints.
 
 ### Planning a purchase
 1. Open **Add probe / compare purchase options** on the Panel design page.
